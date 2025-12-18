@@ -61,10 +61,7 @@ DEFAULTS: dict[str, Any] = dict(
 
 # Sweep definitions with transform choice by name (avoids circular import)
 SWEEPS: list[dict[str, object]] = [
-    dict(num_neck=1, head_depth=4, tfms="tfms0"),
-    dict(num_neck=1, head_depth=5, tfms="tfms0"),
-    dict(num_neck=2, head_depth=4, tfms="tfms0"),
-    dict(num_neck=2, head_depth=5, tfms="tfms0"),
+    dict(num_neck=1, head_depth=4)
 ]
 
 def default_num_workers(reserve: int = 2) -> int:
