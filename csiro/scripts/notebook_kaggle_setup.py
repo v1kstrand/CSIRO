@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
+
+_PKG_SRC = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(_PKG_SRC))
 
 from csiro_biomass.config import DEFAULT_IMG_SIZE, DEFAULT_SEED, IMAGENET_MEAN, IMAGENET_STD, TARGETS
 from csiro_biomass.data import load_train_wide
@@ -73,4 +77,3 @@ __all__ = [
     "load_model",
     "load_wide_df",
 ]
-

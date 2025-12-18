@@ -87,4 +87,3 @@ def show_nxn_grid(
 
     plt.tight_layout()
     plt.show()
-

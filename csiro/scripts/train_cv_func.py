@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import torch
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_SCRIPTS_DIR))
+
+_PKG_SRC = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(_PKG_SRC))
 
 from csiro_biomass.amp import set_dtype
 from csiro_biomass.data import BiomassBaseCached, load_train_wide
@@ -59,7 +66,7 @@ def train_cv(
     verbose: bool = True,
 ) -> Any:
     """
-    Programmatic (non-argparse) entrypoint equivalent to scripts/train_cv.py.
+    Programmatic (non-argparse) entrypoint equivalent to csiro/scripts/train_cv.py.
 
     Returns:
       - if run_sweeps=False: (fold_scores, mean, std)
@@ -125,4 +132,3 @@ def train_cv(
             )
         )
     return outputs
-

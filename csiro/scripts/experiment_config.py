@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_PKG_SRC = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(_PKG_SRC))
+
 from csiro_biomass.config import DEFAULT_IMG_SIZE, DEFAULT_SEED
 from csiro_biomass.transforms import get_tfms_0
 
@@ -32,4 +38,3 @@ SWEEPS = [
     dict(num_neck=2, head_depth=4, tfms_fn=get_tfms_0),
     dict(num_neck=2, head_depth=5, tfms_fn=get_tfms_0),
 ]
-

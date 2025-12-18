@@ -24,4 +24,3 @@ def grad_scaler(device: str | torch.device) -> torch.cuda.amp.GradScaler:
     device_str = str(device)
     enabled = device_str.startswith("cuda") and DTYPE == torch.float16
     return torch.cuda.amp.GradScaler(enabled=enabled)
-

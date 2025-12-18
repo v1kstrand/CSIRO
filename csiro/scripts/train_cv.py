@@ -3,8 +3,15 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
+from pathlib import Path
 
 import torch
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_SCRIPTS_DIR))
+
+_PKG_SRC = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(_PKG_SRC))
 
 from csiro_biomass.amp import set_dtype
 from csiro_biomass.data import BiomassBaseCached, load_train_wide
@@ -53,7 +60,9 @@ def main() -> None:
     ap.add_argument("--swa-eval-freq", type=int, default=DEFAULTS["swa_eval_freq"])
 
     ap.add_argument("--tfms", choices=("default", "tfms0"), default="default")
-    ap.add_argument("--run-sweeps", action="store_true", help="Run predefined sweeps from scripts/experiment_config.py")
+    ap.add_argument(
+        "--run-sweeps", action="store_true", help="Run predefined sweeps from csiro/scripts/experiment_config.py"
+    )
     ap.add_argument("--comet-project", default=None, help="Comet project name (requires comet-ml installed)")
 
     ap.add_argument("--n-splits", type=int, default=5)
@@ -124,4 +133,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

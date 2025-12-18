@@ -15,12 +15,12 @@ pip install -e .
   - Typical:
     - T4: `torch.float16`
     - A100/H100: `torch.bfloat16` is often fine
-- Script defaults (epochs, LR, SWA, neck blocks): edit `scripts/experiment_config.py`.
+- Script defaults (epochs, LR, SWA, neck blocks): edit `csiro/scripts/experiment_config.py`.
 
 ## Run grouped CV (script)
 
 ```bash
-python scripts/train_cv.py ^
+python csiro/scripts/train_cv.py ^
   --csv /path/to/train.csv ^
   --root /path/to/dataset/root ^
   --dino-repo /path/to/dinov3 ^
@@ -31,4 +31,3 @@ Notes:
 - DINOv3 weights/repo are not included; pass paths via CLI.
 - The provided notebook (`kaggle_CSIRO.ipynb`) can be updated to import from this package.
 - `comet-ml` logging is optional: install it only if you pass `--comet-project` (or `comet_exp_name=...` in code).
-
