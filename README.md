@@ -11,7 +11,7 @@ pip install -e .
 ## Key knobs
 
 - AMP dtype: set `DTYPE` (and optional GradScaler is enabled automatically for fp16).
-  - In code: `from csiro_biomass.amp import DTYPE, set_dtype`
+  - In code: `from csiro.amp import DTYPE, set_dtype`
   - Typical:
     - T4: `torch.float16`
     - A100/H100: `torch.bfloat16` is often fine

@@ -22,8 +22,6 @@ dependencies = [
 [project.optional-dependencies]
 comet = ["comet-ml"]
 
-[tool.setuptools]
-package-dir = {"" = "csiro/src"}
-
 [tool.setuptools.packages.find]
-where = ["csiro/src"]
+where = ["."]
+include = ["csiro*"]

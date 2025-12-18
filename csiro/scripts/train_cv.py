@@ -10,13 +10,13 @@ import torch
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
-_PKG_SRC = Path(__file__).resolve().parents[1] / "src"
-sys.path.insert(0, str(_PKG_SRC))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT))
 
-from csiro_biomass.amp import set_dtype
-from csiro_biomass.data import BiomassBaseCached, load_train_wide
-from csiro_biomass.train import run_groupkfold_cv
-from csiro_biomass.transforms import get_tfms, get_tfms_0
+from csiro.amp import set_dtype
+from csiro.data import BiomassBaseCached, load_train_wide
+from csiro.train import run_groupkfold_cv
+from csiro.transforms import get_tfms, get_tfms_0
 
 from experiment_config import DEFAULTS, SWEEPS
 

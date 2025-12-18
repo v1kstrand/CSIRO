@@ -7,11 +7,11 @@ from pathlib import Path
 
 import torch
 
-_PKG_SRC = Path(__file__).resolve().parents[1] / "src"
-sys.path.insert(0, str(_PKG_SRC))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT))
 
-from csiro_biomass.config import DEFAULT_IMG_SIZE, DEFAULT_SEED, IMAGENET_MEAN, IMAGENET_STD, TARGETS
-from csiro_biomass.data import load_train_wide
+from csiro.config import DEFAULT_IMG_SIZE, DEFAULT_SEED, IMAGENET_MEAN, IMAGENET_STD, TARGETS
+from csiro.data import load_train_wide
 
 # This module mirrors the key "globals" cell from `kaggle_CSIRO.ipynb`, but avoids
 # doing heavyweight work (like `torch.hub.load`) at import time.
