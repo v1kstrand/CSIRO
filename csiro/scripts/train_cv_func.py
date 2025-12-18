@@ -47,8 +47,7 @@ def train_cv(
     sweeps: dict = None
 ) -> Any:
     cfg: dict[str, Any] = dict(DEFAULTS)
-    if overrides:
-        cfg.update(overrides)
+    
 
     dtype_t = parse_dtype(cfg["dtype"])
     set_dtype(dtype_t)
@@ -103,6 +102,11 @@ def train_cv(
         tfms_fn = _tfms_from_name(tfms) if isinstance(tfms, str) else tfms,
         plot_imgs = plot_imgs
     )
+    
+    if overrides:
+        base_kwargs.update(overrides)
+        
+    print(base_kwargs)
 
     sweep_id = str(uuid.uuid4())[:4]
     outputs: list[dict[str, Any]] = []
