@@ -100,6 +100,8 @@ def train_cv(
         source="local",
         weights=str(dino_weights),
     )
+    
+    comet_project = "CSIRO" +str(uuid.uuid4()) if comet_project is None else str(comet_project)
 
     tfms_fn = _tfms_from_name(tfms)
     base_kwargs = dict(
