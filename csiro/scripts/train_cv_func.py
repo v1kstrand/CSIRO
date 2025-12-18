@@ -42,10 +42,10 @@ def train_cv(
     dino_weights: str | None = None,
     model_size: str = DEFAULT_MODEL_SIZE,  # "b" == ViT-Base
     plus: str = DEFAULT_PLUS,
-    tfms: str = "default",  # "default" 
-    run_sweeps: bool = False,
+    tfms: str = "default",  # "default"
     overrides: dict[str, Any] | None = None,
-    plot_imgs: False
+    plot_imgs: bool =  False,
+    sweeps: dict = None
 ) -> Any:
     cfg: dict[str, Any] = dict(DEFAULTS)
     if overrides:
@@ -105,12 +105,9 @@ def train_cv(
         plot_imgs = plot_imgs
     )
 
-    if not run_sweeps:
-        return 
-
     sweep_id = str(uuid.uuid4())[:4]
     outputs: list[dict[str, Any]] = []
-    for sweep in SWEEPS:
+    for sweep in sweeps or SWEEPS:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items() if k != "tfms"})
         kwargs["sweep_config"] = str(sweep)
