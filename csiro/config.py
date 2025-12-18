@@ -56,7 +56,7 @@ DEFAULTS: dict[str, Any] = dict(
     stratify_col="State",
     comet_project=None,
     device="cuda",
-    verbose=True,
+    verbose=False,
 )
 
 # Sweep definitions with transform choice by name (avoids circular import)
