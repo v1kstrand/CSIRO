@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Sequence
+import os, yaml
 
 
 TARGETS: tuple[str, ...] = ("Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g")
@@ -29,8 +30,14 @@ DEFAULT_DATA_ROOT: str = "/notebooks/kaggle/csiro"
 DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
 DEFAULT_DTYPE_STR: str = "bf16"  # fp16|bf16|fp32
+DEFAULT_ENV_PATH = "/notebooks/env.yaml"
 
-# Script/experiment defaults (matches current notebook settings)
+with open(DEFAULT_ENV_PATH, 'r', encoding='utf-8') as f:
+    env = yaml.safe_load(f)
+
+for k, v in env.items():
+    os.environ[k] = v
+    
 DEFAULTS: dict[str, Any] = dict(
     seed=DEFAULT_SEED,
     img_size=DEFAULT_IMG_SIZE,
