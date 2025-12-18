@@ -81,13 +81,6 @@ def train_cv(
     verbose: bool = True,
 ) -> Any:
     
-    with open(yaml_path, 'r', encoding='utf-8') as f:
-        env = yaml.safe_load(f)
-
-    for k, v in env.items():
-        os.environ[k] = v
-    
-    
     set_dtype(_parse_dtype(dtype))
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
