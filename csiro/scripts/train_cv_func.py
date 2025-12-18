@@ -105,8 +105,6 @@ def train_cv(
     
     if overrides:
         base_kwargs.update(overrides)
-        
-    print(base_kwargs)
 
     sweep_id = str(uuid.uuid4())[:4]
     outputs: list[dict[str, Any]] = []
