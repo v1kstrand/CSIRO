@@ -324,6 +324,10 @@ def run_groupkfold_cv(
                 project_name=comet_exp_name,
                 experiment_key=None,
             )
+            for k, v in train_kwargs.items():
+                if isinstance(v, (int, float, str)):
+                    comet_exp.log_parameter(k, v)
+            
         except Exception as e:
             raise ImportError(f"{e}") from e
 
