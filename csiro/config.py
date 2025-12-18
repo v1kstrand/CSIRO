@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any, Sequence
-import os, yaml
 
 
 TARGETS: tuple[str, ...] = ("Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g")
@@ -30,35 +29,34 @@ DEFAULT_DATA_ROOT: str = "/notebooks/kaggle/csiro"
 DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
 DEFAULT_DTYPE_STR: str = "bf16"  # fp16|bf16|fp32
-DEFAULT_ENV_YAML: str = "/notebooks/env.yaml"
-
-
-with open(DEFAULT_ENV_YAML, 'r', encoding='utf-8') as f:
-    env = yaml.safe_load(f)
-
-for k, v in env.items():
-    os.environ[k] = v
 
 # Script/experiment defaults (matches current notebook settings)
-DEFAULTS: dict[str, object] = dict(
+DEFAULTS: dict[str, Any] = dict(
     seed=DEFAULT_SEED,
     img_size=DEFAULT_IMG_SIZE,
     epochs=80,
     batch_size=64,
     wd=3e-3,
     lr_start=3e-4,
-    lr_final=5e-5,
+    lr_final=1e-7,
     early_stopping=15,
     head_hidden=2048,
     head_drop=0.1,
     head_depth=5,
     num_neck=0,
-    swa_epochs=20,
+    swa_epochs=15,
     swa_lr=None,
-    swa_anneal_epochs=15,
-    swa_load_best=False,
+    swa_anneal_epochs=20,
+    swa_load_best=True,
     swa_eval_freq=2,
     dtype=DEFAULT_DTYPE_STR,
+    clip_val=3.0,
+    n_splits=5,
+    group_col="Sampling_Date",
+    stratify_col="State",
+    comet_project=None,
+    device="cuda",
+    verbose=True,
 )
 
 # Sweep definitions with transform choice by name (avoids circular import)
@@ -101,89 +99,3 @@ def parse_dtype(dtype: str):
     if s in ("fp32", "float32"):
         return torch.float32
     raise ValueError(f"Unknown dtype: {dtype}")
-
-
-def setup_into_notebook(
-    *,
-    ns: dict[str, Any] | None = None,
-    repo_dir: str = DEFAULT_DINO_REPO_DIR,
-    root: str = DEFAULT_DATA_ROOT,
-    model_size: str = DEFAULT_MODEL_SIZE,
-    plus: str = DEFAULT_PLUS,
-    img_size: int = DEFAULT_IMG_SIZE,
-    seed: int = DEFAULT_SEED,
-    dtype: str = DEFAULT_DTYPE_STR,
-    compile_model: bool = False,
-    verbose: bool = True,
-    make_dataset: bool = False,
-    cache_images: bool = True,
-) -> dict[str, Any]:
-    import inspect
-    import os
-    import sys
-    import torch
-
-    from csiro.amp import set_dtype
-    from csiro.data import BiomassBaseCached, load_train_wide
-
-    if ns is None:
-        frame = inspect.currentframe()
-        ns = frame.f_back.f_globals if frame and frame.f_back else globals()
-
-    sys.path.insert(0, str(repo_dir))
-
-    torch.backends.cudnn.benchmark = True
-    try:
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-    except Exception:
-        pass
-
-    dtype_t = parse_dtype(dtype)
-    set_dtype(dtype_t)
-
-    csv_path = os.path.join(root, "train.csv")
-    weights = dino_weights_path(repo_dir=repo_dir, model_size=model_size, plus=plus)
-    hub_name = dino_hub_name(model_size=model_size, plus=plus)
-
-    wide_df = load_train_wide(csv_path, root=root, targets=TARGETS)
-    model = torch.hub.load(repo_dir, hub_name, source="local", weights=weights, verbose=verbose)
-
-    feat_dim = getattr(getattr(model, "norm", None), "normalized_shape", [None])[0]
-    try:
-        feat_dim = int(feat_dim) if feat_dim is not None else None
-    except Exception:
-        feat_dim = None
-
-    dataset_biomass = None
-    if make_dataset:
-        dataset_biomass = BiomassBaseCached(wide_df, img_size=int(img_size), cache_images=bool(cache_images))
-
-    env = dict(
-        WB=WB,
-        WL=WL,
-        WL_plus=WL_plus,
-        model_size=str(model_size),
-        plus=str(plus),
-        COMPILE_MODEL=bool(compile_model),
-        REPO_DIR=str(repo_dir),
-        DINO_WEIGHTS=str(weights),
-        MODEL=model,
-        NUM_WORKERS=default_num_workers(),
-        ROOT=str(root),
-        CSV_PATH=str(csv_path),
-        TARGETS=TARGETS,
-        WIDE_DF=wide_df,
-        IMAGENET_MEAN=IMAGENET_MEAN,
-        IMAGENET_STD=IMAGENET_STD,
-        IMG_SIZE=int(img_size),
-        SEED=int(seed),
-        DTYPE=dtype_t,
-        FEAT_DIM=feat_dim,
-        dataset_biomass=dataset_biomass,
-    )
-    ns.update(env)
-    return env
-
-
-setup = setup_into_notebook

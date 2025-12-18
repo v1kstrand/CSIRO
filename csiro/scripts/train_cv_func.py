@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -20,28 +21,16 @@ from csiro.config import (
     SWEEPS,
     dino_hub_name,
     dino_weights_path,
+    parse_dtype,
 )
 from csiro.data import BiomassBaseCached, load_train_wide
 from csiro.train import run_groupkfold_cv
-from csiro.transforms import get_tfms, get_tfms_0
-
-
-def _parse_dtype(s: str) -> torch.dtype:
-    s = str(s).strip().lower()
-    if s in ("fp16", "float16", "half"):
-        return torch.float16
-    if s in ("bf16", "bfloat16"):
-        return torch.bfloat16
-    if s in ("fp32", "float32"):
-        return torch.float32
-    raise ValueError(f"Unknown dtype: {s}")
+from csiro.transforms import get_tfms
 
 
 def _tfms_from_name(name: str):
     if name == "default":
         return get_tfms
-    if name == "tfms0":
-        return get_tfms_0
     raise ValueError(f"Unknown tfms: {name!r}")
 
 
@@ -53,47 +42,30 @@ def train_cv(
     dino_weights: str | None = None,
     model_size: str = DEFAULT_MODEL_SIZE,  # "b" == ViT-Base
     plus: str = DEFAULT_PLUS,
-    dtype: str = DEFAULTS["dtype"],
-    img_size: int = DEFAULTS["img_size"],
-    epochs: int = DEFAULTS["epochs"],
-    batch_size: int = DEFAULTS["batch_size"],
-    wd: float = DEFAULTS["wd"],
-    lr_start: float = DEFAULTS["lr_start"],
-    lr_final: float = DEFAULTS["lr_final"],
-    early_stopping: int = DEFAULTS["early_stopping"],
-    head_hidden: int = DEFAULTS["head_hidden"],
-    head_depth: int = DEFAULTS["head_depth"],
-    head_drop: float = DEFAULTS["head_drop"],
-    num_neck: int = DEFAULTS["num_neck"],
-    swa_epochs: int = DEFAULTS["swa_epochs"],
-    swa_lr: float | None = DEFAULTS["swa_lr"],
-    swa_anneal_epochs: int = DEFAULTS["swa_anneal_epochs"],
-    swa_load_best: bool = DEFAULTS["swa_load_best"],
-    swa_eval_freq: int = DEFAULTS["swa_eval_freq"],
-    tfms: str = "default",  # "default" | "tfms0"
+    tfms: str = "default",  # "default" 
     run_sweeps: bool = False,
-    comet_project: str | None = None,
-    n_splits: int = 5,
-    group_col: str = "Sampling_Date",
-    stratify_col: str = "State",
-    seed: int = DEFAULTS["seed"],
-    device: str | None = None,
-    verbose: bool = True,
+    overrides: dict[str, Any] | None = None,
+    plot_imgs: False
 ) -> Any:
-    
-    set_dtype(_parse_dtype(dtype))
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg: dict[str, Any] = dict(DEFAULTS)
+    if overrides:
+        cfg.update(overrides)
+
+    dtype_t = parse_dtype(cfg["dtype"])
+    set_dtype(dtype_t)
+
+    device = str(cfg.get("device", "cuda"))
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        device = "cpu"
 
     if csv is None:
-        import os
         csv = os.path.join(root, "train.csv")
     if dino_weights is None:
         dino_weights = dino_weights_path(repo_dir=dino_repo, model_size=model_size, plus=plus)
 
     sys.path.insert(0, str(dino_repo))
-    wide_df = load_train_wide(str(csv), root=root)
-    dataset = BiomassBaseCached(wide_df, img_size=int(img_size))
+    wide_df = load_train_wide(str(csv), root=str(root))
+    dataset = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
 
     backbone = torch.hub.load(
         str(dino_repo),
@@ -101,51 +73,52 @@ def train_cv(
         source="local",
         weights=str(dino_weights),
     )
-    
-    comet_project = "CSIRO" +str(uuid.uuid4()) if comet_project is None else str(comet_project)
 
-    tfms_fn = _tfms_from_name(tfms)
     base_kwargs = dict(
         dataset=dataset,
         wide_df=wide_df,
         backbone=backbone,
-        n_splits=int(n_splits),
-        seed=int(seed),
-        group_col=group_col,
-        stratify_col=stratify_col,
         device=device,
-        epochs=int(epochs),
-        batch_size=int(batch_size),
-        wd=float(wd),
-        lr_start=float(lr_start),
-        lr_final=float(lr_final),
-        early_stopping=int(early_stopping),
-        head_hidden=int(head_hidden),
-        head_depth=int(head_depth),
-        head_drop=float(head_drop),
-        num_neck=int(num_neck),
-        swa_epochs=int(swa_epochs),
-        swa_lr=swa_lr,
-        swa_anneal_epochs=int(swa_anneal_epochs),
-        swa_load_best=bool(swa_load_best),
-        swa_eval_freq=int(swa_eval_freq),
-        comet_exp_name=comet_project,
-        verbose=bool(verbose),
+        n_splits=int(cfg["n_splits"]),
+        seed=int(cfg["seed"]),
+        group_col=str(cfg["group_col"]),
+        stratify_col=str(cfg["stratify_col"]),
+        epochs=int(cfg["epochs"]),
+        batch_size=int(cfg["batch_size"]),
+        wd=float(cfg["wd"]),
+        lr_start=float(cfg["lr_start"]),
+        lr_final=float(cfg["lr_final"]),
+        early_stopping=int(cfg["early_stopping"]),
+        head_hidden=int(cfg["head_hidden"]),
+        head_depth=int(cfg["head_depth"]),
+        head_drop=float(cfg["head_drop"]),
+        num_neck=int(cfg["num_neck"]),
+        swa_epochs=int(cfg["swa_epochs"]),
+        swa_lr=cfg["swa_lr"],
+        swa_anneal_epochs=int(cfg["swa_anneal_epochs"]),
+        swa_load_best=bool(cfg["swa_load_best"]),
+        swa_eval_freq=int(cfg["swa_eval_freq"]),
+        clip_val=cfg.get("clip_val", None),
+        comet_exp_name=cfg.get("comet_project", None),
+        verbose=bool(cfg["verbose"]),
+        tfms_fn = _tfms_from_name(tfms) if isinstance(tfms, str) else tfms,
+        plot_imgs = plot_imgs
     )
 
     if not run_sweeps:
-        return run_groupkfold_cv(tfms_fn=tfms_fn, sweep_config="single", **base_kwargs)
+        return 
 
     sweep_id = str(uuid.uuid4())[:4]
     outputs: list[dict[str, Any]] = []
     for sweep in SWEEPS:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items() if k != "tfms"})
-        kwargs["tfms_fn"] = _tfms_from_name(str(sweep.get("tfms", "default")))
         kwargs["sweep_config"] = str(sweep)
         if kwargs["comet_exp_name"] is not None:
             kwargs["comet_exp_name"] = f"{kwargs['comet_exp_name']}-{sweep_id}"
 
         fold_scores, mean, std = run_groupkfold_cv(**kwargs)
         outputs.append(dict(sweep_config=kwargs["sweep_config"], fold_scores=fold_scores, mean=mean, std=std))
+
     return outputs
+

@@ -33,24 +33,6 @@ def get_train_tfms():
                     T.RandomRotation((270, 270)),
                 ]
             ),
-            T.ColorJitter(brightness=0.20, contrast=0.20, saturation=0.20, hue=0.04),
-        ]
-    )
-
-
-def get_tfms_0():
-    return T.Compose(
-        [
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomVerticalFlip(p=0.5),
-            T.RandomChoice(
-                [
-                    T.Lambda(lambda x: x),
-                    T.RandomRotation((90, 90)),
-                    T.RandomRotation((180, 180)),
-                    T.RandomRotation((270, 270)),
-                ]
-            ),
             T.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.035),
         ]
     )
