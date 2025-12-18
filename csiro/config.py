@@ -61,7 +61,7 @@ DEFAULTS: dict[str, Any] = dict(
     n_splits=5,
     group_col="Sampling_Date",
     stratify_col="State",
-    comet_project=None,
+    comet_exp_name=None,
     device="cuda",
     verbose=False,
 )
