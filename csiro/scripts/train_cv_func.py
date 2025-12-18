@@ -39,9 +39,8 @@ def train_cv(
     plot_imgs: bool =  False,
     sweeps: dict = None
 ) -> Any:
-    cfg: dict[str, Any] = dict(DEFAULTS)
     
-
+    cfg: dict[str, Any] = dict(DEFAULTS)
     dtype_t = parse_dtype(cfg["dtype"])
     set_dtype(dtype_t)
 
@@ -103,7 +102,7 @@ def train_cv(
     outputs: list[dict[str, Any]] = []
     for sweep in sweeps or SWEEPS:
         kwargs = dict(base_kwargs)
-        kwargs.update({k: v for k, v in sweep.items() if k != "tfms"})
+        kwargs.update({k: v for k, v in sweep.items()})
         kwargs["sweep_config"] = str(sweep)
         if kwargs["comet_exp_name"] is not None:
             kwargs["comet_exp_name"] = f"{kwargs['comet_exp_name']}-{sweep_id}"
