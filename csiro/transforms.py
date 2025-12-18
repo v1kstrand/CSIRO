@@ -20,7 +20,7 @@ class PadToSquare:
         return new
 
 
-def get_train_tfms():
+def train_tfms():
     return T.Compose(
         [
             T.RandomHorizontalFlip(p=0.5),
@@ -38,17 +38,5 @@ def get_train_tfms():
     )
 
 
-def get_post_tfms(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
+def post_tfms(mean=IMAGENET_MEAN, std=IMAGENET_STD):
     return T.Compose([T.ToTensor(), T.Normalize(mean=mean, std=std)])
-
-
-def get_post_tfms_imagenet():
-    return get_post_tfms(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-
-
-# Notebook-friendly aliases
-get_tfms = get_train_tfms
-
-
-def post_tfms():
-    return get_post_tfms_imagenet()

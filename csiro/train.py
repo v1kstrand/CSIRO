@@ -19,7 +19,7 @@ from .data import TransformView
 from .losses import WeightedMSELoss
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
-from .transforms import get_post_tfms_imagenet, get_train_tfms
+from .transforms import post_tfms, train_tfms
 
 
 def cos_sin_lr(ep: int, epochs: int, lr_start: float, lr_final: float) -> float:
@@ -294,8 +294,6 @@ def run_groupkfold_cv(
     seed: int = DEFAULT_SEED,
     group_col: str = "Sampling_Date",
     stratify_col: str = "State",
-    train_tfms_fn: Callable[[], T.Compose] | None = None,
-    post_tfms_fn: Callable[[], T.Compose] | None = None,
     tfms_fn: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     sweep_config: str = "",
@@ -306,13 +304,11 @@ def run_groupkfold_cv(
     y = wide_df[stratify_col].values
     groups = wide_df[group_col].values
 
-    if train_tfms_fn is None:
-        train_tfms_fn = tfms_fn or get_train_tfms
-    if post_tfms_fn is None:
-        post_tfms_fn = get_post_tfms_imagenet
+    if tfms_fn is None:
+        tfms_fn = train_tfms
 
-    ds_tr_view = TransformView(dataset, T.Compose([train_tfms_fn(), post_tfms_fn()]))
-    ds_va_view = TransformView(dataset, post_tfms_fn())
+    ds_tr_view = TransformView(dataset, T.Compose([tfms_fn(), post_tfms()]))
+    ds_va_view = TransformView(dataset, post_tfms())
 
     comet_exp = None
     if comet_exp_name is not None:
