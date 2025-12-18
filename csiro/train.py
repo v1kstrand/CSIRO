@@ -325,9 +325,7 @@ def run_groupkfold_cv(
                 experiment_key=None,
             )
         except Exception as e:
-            raise ImportError(
-                "comet_exp_name was provided but comet_ml could not be imported; install comet-ml or pass comet_exp_name=None."
-            ) from e
+            raise ImportError(f"{e}") from e
 
     fold_scores: list[float] = []
     try:
