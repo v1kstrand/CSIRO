@@ -41,7 +41,7 @@ def train_cv(
     dino_weights: str | None = None,
     model_size: str = DEFAULT_MODEL_SIZE,  # "b" == ViT-Base
     plus: str = DEFAULT_PLUS,
-    tfms: str = "default",  # "default"
+    tfms = None,
     overrides: dict[str, Any] | None = None,
     plot_imgs: bool =  False,
     sweeps: dict = None
@@ -77,10 +77,10 @@ def train_cv(
         wide_df=wide_df,
         backbone=backbone,
         device=device,
-        n_splits=int(cfg["n_splits"]),
-        seed=int(cfg["seed"]),
-        group_col=str(cfg["group_col"]),
-        stratify_col=str(cfg["stratify_col"]),
+        n_splits=int(cfg.get("n_splits", 5)),
+        seed=int(cfg.get("seed")),
+        group_col=str(cfg.get("group_col", "Sampling_Date")),
+        stratify_col=str(cfg.get("stratify_col", "State")),
         epochs=int(cfg["epochs"]),
         batch_size=int(cfg["batch_size"]),
         wd=float(cfg["wd"]),
@@ -92,14 +92,14 @@ def train_cv(
         head_drop=float(cfg["head_drop"]),
         num_neck=int(cfg["num_neck"]),
         swa_epochs=int(cfg["swa_epochs"]),
-        swa_lr=cfg["swa_lr"],
+        swa_lr=cfg.get("swa_lr", None),
         swa_anneal_epochs=int(cfg["swa_anneal_epochs"]),
-        swa_load_best=bool(cfg["swa_load_best"]),
-        swa_eval_freq=int(cfg["swa_eval_freq"]),
+        swa_load_best=bool(cfg.get("swa_load_best", True)),
+        swa_eval_freq=int(cfg.get("swa_eval_freq", 2)),
         clip_val=cfg.get("clip_val", None),
-        comet_exp_name=cfg.get("comet_project", None),
-        verbose=bool(cfg["verbose"]),
-        tfms_fn = _tfms_from_name(tfms) if isinstance(tfms, str) else tfms,
+        comet_exp_name=cfg.get("comet_exp_name", "csiro"),
+        verbose=bool(cfg.get("verbose", False)),
+        tfms_fn = tfms,
         plot_imgs = plot_imgs
     )
     

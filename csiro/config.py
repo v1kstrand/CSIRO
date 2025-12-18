@@ -41,9 +41,10 @@ for k, v in env.items():
 DEFAULTS: dict[str, Any] = dict(
     seed=DEFAULT_SEED,
     img_size=DEFAULT_IMG_SIZE,
+    dtype=DEFAULT_DTYPE_STR,
     epochs=80,
     batch_size=124,
-    wd=3e-3,
+    wd=1e-3,
     lr_start=3e-4,
     lr_final=1e-7,
     early_stopping=15,
@@ -51,19 +52,10 @@ DEFAULTS: dict[str, Any] = dict(
     head_drop=0.1,
     head_depth=4,
     num_neck=1,
-    swa_epochs=15,
-    swa_lr=None,
-    swa_anneal_epochs=20,
-    swa_load_best=True,
-    swa_eval_freq=2,
-    dtype=DEFAULT_DTYPE_STR,
+    swa_epochs=20,
+    swa_anneal_epochs=40,
     clip_val=3.0,
-    n_splits=5,
-    group_col="Sampling_Date",
-    stratify_col="State",
     comet_exp_name=None,
-    device="cuda",
-    verbose=False,
 )
 
 # Sweep definitions with transform choice by name (avoids circular import)
