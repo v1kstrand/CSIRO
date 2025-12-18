@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csiro-biomass"
+version = "0.1.0"
+description = "CSIRO Biomass Kaggle baseline (DINOv3 + MLP) with grouped CV"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "pandas",
+  "Pillow",
+  "scikit-learn",
+  "tqdm",
+  "matplotlib",
+  "torch",
+  "torchvision",
+]
+
+[project.optional-dependencies]
+comet = ["comet-ml"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
