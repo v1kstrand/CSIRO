@@ -15,7 +15,7 @@ pip install -e .
   - Typical:
     - T4: `torch.float16`
     - A100/H100: `torch.bfloat16` is often fine
-- Script defaults (epochs, LR, SWA, neck blocks): edit `csiro/scripts/experiment_config.py`.
+- Script defaults (epochs, LR, SWA, neck blocks): edit `csiro/config.py`.
 
 ## Run grouped CV (script)
 

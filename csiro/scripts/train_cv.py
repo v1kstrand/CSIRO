@@ -7,18 +7,14 @@ from pathlib import Path
 
 import torch
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_SCRIPTS_DIR))
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from csiro.amp import set_dtype
+from csiro.config import DEFAULTS, SWEEPS
 from csiro.data import BiomassBaseCached, load_train_wide
 from csiro.train import run_groupkfold_cv
 from csiro.transforms import get_tfms, get_tfms_0
-
-from experiment_config import DEFAULTS, SWEEPS
 
 
 def _parse_dtype(s: str) -> torch.dtype:
@@ -30,6 +26,14 @@ def _parse_dtype(s: str) -> torch.dtype:
     if s in ("fp32", "float32"):
         return torch.float32
     raise ValueError(f"Unknown dtype: {s}")
+
+
+def _tfms_from_name(name: str):
+    if name == "default":
+        return get_tfms
+    if name == "tfms0":
+        return get_tfms_0
+    raise ValueError(f"Unknown tfms: {name!r}")
 
 
 def main() -> None:
@@ -60,9 +64,7 @@ def main() -> None:
     ap.add_argument("--swa-eval-freq", type=int, default=DEFAULTS["swa_eval_freq"])
 
     ap.add_argument("--tfms", choices=("default", "tfms0"), default="default")
-    ap.add_argument(
-        "--run-sweeps", action="store_true", help="Run predefined sweeps from csiro/scripts/experiment_config.py"
-    )
+    ap.add_argument("--run-sweeps", action="store_true", help="Run predefined sweeps from csiro/config.py")
     ap.add_argument("--comet-project", default=None, help="Comet project name (requires comet-ml installed)")
 
     ap.add_argument("--n-splits", type=int, default=5)
@@ -71,16 +73,16 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=DEFAULTS["seed"])
     args = ap.parse_args()
 
-    set_dtype(_parse_dtype(args.dtype))
+    set_dtype(_parse_dtype(str(args.dtype)))
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    sys.path.insert(0, args.dino_repo)
+    sys.path.insert(0, str(args.dino_repo))
     wide_df = load_train_wide(args.csv, root=args.root)
     dataset = BiomassBaseCached(wide_df, img_size=args.img_size)
 
     backbone = torch.hub.load(args.dino_repo, "dinov3_vitb16", source="local", weights=args.dino_weights)
 
-    tfms_fn = get_tfms if args.tfms == "default" else get_tfms_0
+    tfms_fn = _tfms_from_name(args.tfms)
     base_kwargs = dict(
         dataset=dataset,
         wide_df=wide_df,
@@ -120,10 +122,12 @@ def main() -> None:
     sweep_id = str(uuid.uuid4())[:4]
     for sweep in SWEEPS:
         kwargs = dict(base_kwargs)
-        kwargs.update(sweep)
-        kwargs["sweep_config"] = str({k: v for k, v in sweep.items() if k != "tfms_fn"})
+        kwargs.update({k: v for k, v in sweep.items() if k != "tfms"})
+        kwargs["tfms_fn"] = _tfms_from_name(str(sweep.get("tfms", "default")))
+        kwargs["sweep_config"] = str(sweep)
         if kwargs["comet_exp_name"] is not None:
             kwargs["comet_exp_name"] = f"{kwargs['comet_exp_name']}-{sweep_id}"
+
         fold_scores, mean, std = run_groupkfold_cv(**kwargs)
         print(f"\nSweep: {kwargs['sweep_config']}")
         for i, s in enumerate(fold_scores.tolist()):
@@ -133,3 +137,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

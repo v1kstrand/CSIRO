@@ -7,18 +7,23 @@ from typing import Any
 
 import torch
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_SCRIPTS_DIR))
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from csiro.amp import set_dtype
+from csiro.config import (
+    DEFAULT_DATA_ROOT,
+    DEFAULT_DINO_REPO_DIR,
+    DEFAULT_MODEL_SIZE,
+    DEFAULT_PLUS,
+    DEFAULTS,
+    SWEEPS,
+    dino_hub_name,
+    dino_weights_path,
+)
 from csiro.data import BiomassBaseCached, load_train_wide
 from csiro.train import run_groupkfold_cv
 from csiro.transforms import get_tfms, get_tfms_0
-
-from experiment_config import DEFAULTS, SWEEPS
 
 
 def _parse_dtype(s: str) -> torch.dtype:
@@ -32,12 +37,22 @@ def _parse_dtype(s: str) -> torch.dtype:
     raise ValueError(f"Unknown dtype: {s}")
 
 
+def _tfms_from_name(name: str):
+    if name == "default":
+        return get_tfms
+    if name == "tfms0":
+        return get_tfms_0
+    raise ValueError(f"Unknown tfms: {name!r}")
+
+
 def train_cv(
     *,
-    csv: str,
-    dino_repo: str,
-    dino_weights: str,
-    root: str | None = None,
+    csv: str | None = None,
+    root: str = DEFAULT_DATA_ROOT,
+    dino_repo: str = DEFAULT_DINO_REPO_DIR,
+    dino_weights: str | None = None,
+    model_size: str = DEFAULT_MODEL_SIZE,  # "b" == ViT-Base
+    plus: str = DEFAULT_PLUS,
     dtype: str = DEFAULTS["dtype"],
     img_size: int = DEFAULTS["img_size"],
     epochs: int = DEFAULTS["epochs"],
@@ -65,24 +80,28 @@ def train_cv(
     device: str | None = None,
     verbose: bool = True,
 ) -> Any:
-    """
-    Programmatic (non-argparse) entrypoint equivalent to csiro/scripts/train_cv.py.
-
-    Returns:
-      - if run_sweeps=False: (fold_scores, mean, std)
-      - if run_sweeps=True: list[dict] with per-sweep outputs
-    """
     set_dtype(_parse_dtype(dtype))
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    sys.path.insert(0, dino_repo)
-    wide_df = load_train_wide(csv, root=root)
+    if csv is None:
+        import os
+        csv = os.path.join(root, "train.csv")
+    if dino_weights is None:
+        dino_weights = dino_weights_path(repo_dir=dino_repo, model_size=model_size, plus=plus)
+
+    sys.path.insert(0, str(dino_repo))
+    wide_df = load_train_wide(str(csv), root=root)
     dataset = BiomassBaseCached(wide_df, img_size=int(img_size))
 
-    backbone = torch.hub.load(dino_repo, "dinov3_vitb16", source="local", weights=dino_weights)
+    backbone = torch.hub.load(
+        str(dino_repo),
+        dino_hub_name(model_size=str(model_size), plus=str(plus)),
+        source="local",
+        weights=str(dino_weights),
+    )
 
-    tfms_fn = get_tfms if tfms == "default" else get_tfms_0
+    tfms_fn = _tfms_from_name(tfms)
     base_kwargs = dict(
         dataset=dataset,
         wide_df=wide_df,
@@ -118,17 +137,12 @@ def train_cv(
     outputs: list[dict[str, Any]] = []
     for sweep in SWEEPS:
         kwargs = dict(base_kwargs)
-        kwargs.update(sweep)
-        kwargs["sweep_config"] = str({k: v for k, v in sweep.items() if k != "tfms_fn"})
+        kwargs.update({k: v for k, v in sweep.items() if k != "tfms"})
+        kwargs["tfms_fn"] = _tfms_from_name(str(sweep.get("tfms", "default")))
+        kwargs["sweep_config"] = str(sweep)
         if kwargs["comet_exp_name"] is not None:
             kwargs["comet_exp_name"] = f"{kwargs['comet_exp_name']}-{sweep_id}"
+
         fold_scores, mean, std = run_groupkfold_cv(**kwargs)
-        outputs.append(
-            dict(
-                sweep_config=kwargs["sweep_config"],
-                fold_scores=fold_scores,
-                mean=mean,
-                std=std,
-            )
-        )
+        outputs.append(dict(sweep_config=kwargs["sweep_config"], fold_scores=fold_scores, mean=mean, std=std))
     return outputs
