@@ -39,9 +39,6 @@ for k, v in env.items():
     os.environ[k] = v
     
 DEFAULTS: dict[str, Any] = dict(
-    seed=DEFAULT_SEED,
-    img_size=DEFAULT_IMG_SIZE,
-    dtype=DEFAULT_DTYPE_STR,
     epochs=80,
     batch_size=124,
     wd=1e-3,
@@ -55,7 +52,10 @@ DEFAULTS: dict[str, Any] = dict(
     swa_epochs=20,
     swa_anneal_epochs=40,
     clip_val=3.0,
-    comet_exp_name=None,
+    comet_exp_name="csiro",
+    seed=DEFAULT_SEED,
+    img_size=DEFAULT_IMG_SIZE,
+    dtype=DEFAULT_DTYPE_STR,
 )
 
 # Sweep definitions with transform choice by name (avoids circular import)
