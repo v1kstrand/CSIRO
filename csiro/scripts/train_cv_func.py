@@ -25,13 +25,6 @@ from csiro.config import (
 )
 from csiro.data import BiomassBaseCached, load_train_wide
 from csiro.train import run_groupkfold_cv
-from csiro.transforms import get_tfms
-
-
-def _tfms_from_name(name: str):
-    if name == "default":
-        return get_tfms
-    raise ValueError(f"Unknown tfms: {name!r}")
 
 def train_cv(
     *,
