@@ -365,6 +365,8 @@ def eval_global_wr2_ensemble(
     tta_rot90: bool = False,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
+    comet_exp: Any | None = None,
+    curr_fold: int | None = None,
 ) -> float:
     for model in models:
         if hasattr(model, "set_train"):
@@ -411,7 +413,13 @@ def eval_global_wr2_ensemble(
 
     mu = sum_wy / (sum_w + 1e-12)
     ss_tot = sum_wy2 - sum_w * mu * mu
-    return (1.0 - ss_res / (ss_tot + 1e-12)).item()
+    score = (1.0 - ss_res / (ss_tot + 1e-12)).item()
+    if comet_exp is not None:
+        try:
+            comet_exp.log_metrics({str(f"1ENS_wR2_cv{curr_fold}"): float(score)})
+        except Exception:
+            pass
+    return float(score)
 
 
 @torch.no_grad()
@@ -589,6 +597,9 @@ def run_groupkfold_cv(
                 dl_va,
                 criterion.w,
                 device=train_kwargs["device"],
+                comet_exp=comet_exp,
+                curr_fold=int(fold_idx),
+                
             )
             fold_scores.append(float(fold_score))
     finally:
