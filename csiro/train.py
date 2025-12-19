@@ -319,17 +319,18 @@ def train_one_fold(
         swa_model.update_parameters(model)
 
         if comet_exp is not None:
-            comet_exp.log_metrics({f"x_swa_train_loss_cv{curr_fold}": float(swa_loss)}, step=int(k))
-
+            comet_exp.log_metrics({f"x_swa_train_loss_cv{curr_fold}_m{model_idx}": float(swa_loss)}, step=int(k))
+            
         s2 = f"[fold {fold_idx} | model {int(model_idx)}] | swa_loss={swa_loss:.4f}"
         if verbose:
             print(s2)
-        p_bar.set_postfix_str(s2)
-
         if int(swa_eval_freq) > 0 and (int(k) % int(swa_eval_freq) == 0):
             swa_score = float(eval_global_wr2(swa_model, dl_va, criterion.w, device=device))
             if comet_exp is not None:
-                comet_exp.log_metrics({f"swa_wR2_cv{curr_fold}": float(swa_score)}, step=int(k))
+                comet_exp.log_metrics({f"swa_wR2_cv{curr_fold}_m{model_idx}": float(swa_score)}, step=int(k))
+                p_bar.set_postfix_str(s2 + f" | swa_wR2={swa_score:.4f}")
+        else:
+            p_bar.set_postfix_str(s2)
 
     p_bar.close()
 
