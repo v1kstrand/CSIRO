@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torchvision.transforms as T
 from sklearn.model_selection import StratifiedGroupKFold
-from torch.optim.swa_utils import AveragedModel, SWALR
+from torch.optim.swa_utils import AveragedModel
 from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
@@ -68,6 +68,50 @@ def _load_parts(m: torch.nn.Module, state: dict[str, dict[str, torch.Tensor]]) -
             part.load_state_dict(state[name], strict=True)
 
 
+def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
+    if len(xs) == 1:
+        return xs[0]
+    agg = str(agg).lower()
+    stacked = torch.stack(xs, dim=0)
+    if agg == "mean":
+        return stacked.mean(dim=0)
+    if agg == "median":
+        return stacked.median(dim=0).values
+    raise ValueError(f"Unknown aggregation: {agg}")
+
+
+def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
+    if torch.is_tensor(x):
+        return x
+    if isinstance(x, (tuple, list)):
+        xs = [xi if torch.is_tensor(xi) else tfms(xi) for xi in x]
+        return torch.stack(xs, dim=0)
+    return tfms(x).unsqueeze(0)
+
+
+def _build_model_from_state(backbone, state: dict[str, Any], device: str | torch.device):
+    model = DINOv3Regressor(
+        backbone,
+        hidden=int(state["head_hidden"]),
+        drop=float(state["head_drop"]),
+        depth=int(state["head_depth"]),
+        num_neck=int(state["num_neck"]),
+    ).to(device)
+    _load_parts(model, state["parts"])
+    return model
+
+def _set_swa_lr(swa_lr_start, swa_lr_final, lr_final):
+    if swa_lr_start is None and swa_lr_final is None:
+        swa_lr_start = float(lr_final)
+        swa_lr_final = float(lr_final)
+    elif swa_lr_start is None:
+        swa_lr_start = float(swa_lr_final)
+    elif swa_lr_final is None:
+        swa_lr_final = float(swa_lr_start)
+
+    return swa_lr_start, swa_lr_final
+
+
 def train_one_fold(
     *,
     ds_tr_view,
@@ -96,11 +140,14 @@ def train_one_fold(
     skip_log_first_n: int = 5,
     curr_fold: int = 0,
     swa_epochs: int = 15,
-    swa_lr: float | None = None,
+    swa_lr_start: float | None = None,
+    swa_lr_final: float | None = None,
     swa_anneal_epochs: int = 10,
     swa_load_best: bool = True,
     swa_eval_freq: int = 2,
-) -> float:
+    model_idx: int = 0,
+    return_state: bool = False,
+) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
 
@@ -116,7 +163,6 @@ def train_one_fold(
 
     if plot_imgs:
         from .viz import show_nxn_grid
-
         show_nxn_grid(dataloader=dl_tr, n=4)
         return float("nan")
 
@@ -133,9 +179,6 @@ def train_one_fold(
     trainable_params = _trainable_params_list(model)
     opt = torch.optim.AdamW(trainable_params, lr=float(lr_start), weight_decay=float(wd))
     scaler = grad_scaler(device)
-
-    if swa_lr is None:
-        swa_lr = float(lr_final)
 
     best_score = -1e9
     best_state = None
@@ -196,7 +239,10 @@ def train_one_fold(
             patience += 1
 
         s1 = f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | lr: {lr:6.4f}"
-        s2 = f"[fold {fold_idx}] | train_loss={train_loss:.4f} | val_wR2={score:.4f} | {s1}"
+        s2 = (
+            f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
+            f"val_wR2={score:.4f} | {s1}"
+        )
         if verbose:
             print(s2)
         p_bar.set_postfix_str(s2)
@@ -210,6 +256,17 @@ def train_one_fold(
     if (int(swa_epochs) <= 0) or (best_state is None):
         if save_path and best_state is not None:
             torch.save(best_state, save_path)
+        if return_state:
+            return {
+                "score": float(best_score),
+                "best_score": float(best_score),
+                "swa_score": None,
+                "state": best_state,
+                "best_state": best_state,
+                "best_opt_state": best_opt_state,
+                "opt_state": copy.deepcopy(opt.state_dict()),
+                "used_swa": False,
+            }
         return float(best_score)
 
     if swa_load_best:
@@ -218,16 +275,20 @@ def train_one_fold(
             opt.load_state_dict(best_opt_state)
 
     swa_model = AveragedModel(model).to(device)
-    swa_sched = SWALR(
-        opt,
-        swa_lr=float(swa_lr),
-        anneal_epochs=int(swa_anneal_epochs),
-        anneal_strategy="cos",
-    )
 
-    p_bar = tqdm(range(1, int(swa_epochs) + 1))
+    swa_lr_start, swa_lr_final = _set_swa_lr(swa_lr_start, swa_lr_final, lr_final)
+    total_swa_epochs = int(swa_epochs)
+    anneal_epochs = min(max(int(swa_anneal_epochs), 0), total_swa_epochs)
+    p_bar = tqdm(range(1, total_swa_epochs + 1))
     swa_score = None
     for k in p_bar:
+        if anneal_epochs <= 0:
+            swa_lr = float(swa_lr_final)
+        elif int(k) <= anneal_epochs:
+            swa_lr = cos_sin_lr(int(k), int(anneal_epochs), float(swa_lr_start), float(swa_lr_final))
+        else:
+            swa_lr = float(swa_lr_final)
+        set_optimizer_lr(opt, float(swa_lr))
         model.set_train(True)
         running = 0.0
         swa_n_seen = 0
@@ -259,13 +320,12 @@ def train_one_fold(
             swa_n_seen += bs
 
         swa_loss = running / max(int(swa_n_seen), 1)
-        swa_sched.step()
         swa_model.update_parameters(model)
 
         if comet_exp is not None:
             comet_exp.log_metrics({f"swa_train_loss_{curr_fold}": float(swa_loss)}, step=int(k))
 
-        s2 = f"[fold {fold_idx}] | swa_loss={swa_loss:.4f}"
+        s2 = f"[fold {fold_idx} | model {int(model_idx)}] | swa_loss={swa_loss:.4f}"
         if verbose:
             print(s2)
         p_bar.set_postfix_str(s2)
@@ -280,10 +340,144 @@ def train_one_fold(
     if swa_score is None or int(swa_eval_freq) <= 0 or (int(k) % int(swa_eval_freq) != 0):
         swa_score = float(eval_global_wr2(swa_model, dl_va, criterion.w, device=device))
 
+    swa_state = _save_parts(swa_model.module)
     if save_path:
-        torch.save(_save_parts(swa_model.module), save_path)
+        torch.save(swa_state, save_path)
 
+    if return_state:
+        return {
+            "score": float(swa_score),
+            "best_score": float(best_score),
+            "swa_score": float(swa_score),
+            "state": swa_state,
+            "best_state": best_state,
+            "best_opt_state": best_opt_state,
+            "opt_state": copy.deepcopy(opt.state_dict()),
+            "used_swa": True,
+        }
     return float(swa_score)
+
+
+@torch.no_grad()
+def eval_global_wr2_ensemble(
+    models: list[torch.nn.Module],
+    dl_va,
+    w_vec: torch.Tensor,
+    *,
+    device: str | torch.device = "cuda",
+    tta_rot90: bool = False,
+    tta_agg: str = "mean",
+    ens_agg: str = "mean",
+) -> float:
+    for model in models:
+        if hasattr(model, "set_train"):
+            model.set_train(False)
+        model.eval()
+
+    w5 = w_vec.to(device).view(1, -1)
+    ss_res = torch.zeros((), device=device)
+    sum_w = torch.zeros((), device=device)
+    sum_wy = torch.zeros((), device=device)
+    sum_wy2 = torch.zeros((), device=device)
+
+    n_rots = 4 if tta_rot90 else 1
+    with torch.inference_mode(), autocast_context(device):
+        for batch in dl_va:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                x, y_log = batch[0], batch[1]
+            else:
+                raise ValueError("Validation loader must yield (x, y_log).")
+
+            x = x.to(device, non_blocking=True)
+            y_log = y_log.to(device, non_blocking=True)
+
+            preds_models: list[torch.Tensor] = []
+            for model in models:
+                preds_rots: list[torch.Tensor] = []
+                for k in range(n_rots):
+                    x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
+                    p_log = model(x_rot).float()
+                    p = torch.expm1(p_log).clamp_min(0.0)
+                    preds_rots.append(p)
+                preds_models.append(_agg_stack(preds_rots, tta_agg))
+
+            p_ens = _agg_stack(preds_models, ens_agg)
+
+            y = torch.expm1(y_log.float())
+            diff = y - p_ens
+            w = w5.expand_as(y)
+
+            ss_res += (w * diff * diff).sum()
+            sum_w += w.sum()
+            sum_wy += (w * y).sum()
+            sum_wy2 += (w * y * y).sum()
+
+    mu = sum_wy / (sum_w + 1e-12)
+    ss_tot = sum_wy2 - sum_w * mu * mu
+    return (1.0 - ss_res / (ss_tot + 1e-12)).item()
+
+
+@torch.no_grad()
+def predict_ensemble(
+    data,
+    states: list[dict[str, Any]],
+    backbone,
+    *,
+    batch_size: int = 128,
+    num_workers: int | None = None,
+    device: str | torch.device = "cuda",
+    tta_rot90: bool = True,
+    tta_agg: str = "mean",
+    ens_agg: str = "mean",
+) -> torch.Tensor:
+    if states and isinstance(states[0], list):
+        states = [s for fold in states for s in fold]
+
+    if isinstance(data, DataLoader):
+        dl = data
+    else:
+        num_workers = default_num_workers() if num_workers is None else int(num_workers)
+        dl = DataLoader(
+            data,
+            shuffle=False,
+            batch_size=int(batch_size),
+            pin_memory=str(device).startswith("cuda"),
+            num_workers=num_workers,
+            persistent_workers=(num_workers > 0),
+        )
+
+    models = [_build_model_from_state(backbone, s, device) for s in states]
+    for model in models:
+        if hasattr(model, "set_train"):
+            model.set_train(False)
+        model.eval()
+
+    tfms = post_tfms()
+    n_rots = 4 if tta_rot90 else 1
+    preds: list[torch.Tensor] = []
+    with torch.inference_mode(), autocast_context(device):
+        for batch in dl:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                x = batch[0]
+            else:
+                x = batch
+
+            x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
+
+            preds_models: list[torch.Tensor] = []
+            for model in models:
+                preds_rots: list[torch.Tensor] = []
+                for k in range(n_rots):
+                    x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
+                    p_log = model(x_rot).float()
+                    p = torch.expm1(p_log).clamp_min(0.0)
+                    preds_rots.append(p)
+                preds_models.append(_agg_stack(preds_rots, tta_agg))
+
+            p_ens = _agg_stack(preds_models, ens_agg)
+            preds.append(p_ens.detach().cpu())
+
+    return torch.cat(preds, dim=0)
 
 
 def run_groupkfold_cv(
@@ -297,6 +491,9 @@ def run_groupkfold_cv(
     tfms_fn: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     sweep_config: str = "",
+    n_models: int = 1,
+    img_size: int | None = None,
+    return_details: bool = False,
     **train_kwargs,
 ):
     sgkf = StratifiedGroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
@@ -328,6 +525,8 @@ def run_groupkfold_cv(
             raise ImportError(f"{e}") from e
 
     fold_scores: list[float] = []
+    fold_model_scores: list[list[float]] = []
+    fold_states: list[list[dict[str, Any]]] = []
     try:
         if comet_exp is not None:
             import uuid
@@ -335,21 +534,77 @@ def run_groupkfold_cv(
             comet_exp.set_name(comet_exp_name + "_" + sweep_config + "_" + str(uuid.uuid4())[:3])
 
         for fold_idx, (tr_idx, va_idx) in enumerate(sgkf.split(X, y, groups)):
-            score = train_one_fold(
-                ds_tr_view=ds_tr_view,
-                ds_va_view=ds_va_view,
-                tr_idx=tr_idx,
-                va_idx=va_idx,
-                fold_idx=int(fold_idx),
-                comet_exp=comet_exp,
-                curr_fold=int(fold_idx),
-                **train_kwargs,
+            model_scores: list[float] = []
+            model_states: list[dict[str, Any]] = []
+            for model_idx in range(int(n_models)):
+                result = train_one_fold(
+                    ds_tr_view=ds_tr_view,
+                    ds_va_view=ds_va_view,
+                    tr_idx=tr_idx,
+                    va_idx=va_idx,
+                    fold_idx=int(fold_idx),
+                    comet_exp=comet_exp,
+                    curr_fold=int(fold_idx),
+                    model_idx=int(model_idx),
+                    return_state=True,
+                    **train_kwargs,
+                )
+                model_scores.append(float(result["score"]))
+                model_states.append(
+                    dict(
+                        fold_idx=int(fold_idx),
+                        model_idx=int(model_idx),
+                        parts=result["state"],
+                        head_hidden=int(train_kwargs["head_hidden"]),
+                        head_depth=int(train_kwargs["head_depth"]),
+                        head_drop=float(train_kwargs["head_drop"]),
+                        num_neck=int(train_kwargs["num_neck"]),
+                        img_size=None if img_size is None else int(img_size),
+                        score=float(result["score"]),
+                        best_score=float(result["best_score"]),
+                        swa_score=result["swa_score"],
+                        best_state=result["best_state"],
+                        best_opt_state=result["best_opt_state"],
+                        opt_state=result["opt_state"],
+                        used_swa=bool(result["used_swa"]),
+                    )
+                )
+
+            fold_model_scores.append(model_scores)
+            fold_states.append(model_states)
+
+            va_subset = Subset(ds_va_view, va_idx)
+            num_workers = train_kwargs.get("num_workers", None)
+            num_workers = default_num_workers() if num_workers is None else int(num_workers)
+            dl_va = DataLoader(
+                va_subset,
+                shuffle=False,
+                batch_size=int(train_kwargs["batch_size"]),
+                pin_memory=str(train_kwargs.get("device", "cuda")).startswith("cuda"),
+                num_workers=num_workers,
+                persistent_workers=(num_workers > 0),
             )
-            fold_scores.append(float(score))
+
+            models = [_build_model_from_state(train_kwargs["backbone"], s, train_kwargs["device"]) for s in model_states]
+            criterion = WeightedMSELoss().to(train_kwargs["device"])
+            fold_score = eval_global_wr2_ensemble(
+                models,
+                dl_va,
+                criterion.w,
+                device=train_kwargs["device"],
+            )
+            fold_scores.append(float(fold_score))
     finally:
         if comet_exp is not None:
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
+    if return_details:
+        return {
+            "fold_scores": scores,
+            "fold_model_scores": fold_model_scores,
+            "mean": float(scores.mean()),
+            "std": float(scores.std(ddof=0)),
+            "states": fold_states,
+        }
     return scores, float(scores.mean()), float(scores.std(ddof=0))
-

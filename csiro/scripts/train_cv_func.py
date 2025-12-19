@@ -69,6 +69,7 @@ def train_cv(
         wide_df=wide_df,
         backbone=backbone,
         device=device,
+        img_size=int(cfg["img_size"]),
         n_splits=int(cfg.get("n_splits", 5)),
         seed=int(cfg.get("seed")),
         group_col=str(cfg.get("group_col", "Sampling_Date")),
@@ -84,11 +85,13 @@ def train_cv(
         head_drop=float(cfg["head_drop"]),
         num_neck=int(cfg["num_neck"]),
         swa_epochs=int(cfg["swa_epochs"]),
-        swa_lr=cfg.get("swa_lr", None),
+        swa_lr_start=cfg.get("swa_lr_start", None),
+        swa_lr_final=cfg.get("swa_lr_final", None),
         swa_anneal_epochs=int(cfg["swa_anneal_epochs"]),
         swa_load_best=bool(cfg.get("swa_load_best", True)),
         swa_eval_freq=int(cfg.get("swa_eval_freq", 2)),
         clip_val=cfg.get("clip_val", 3.0),
+        n_models=int(cfg.get("n_models", 1)),
         comet_exp_name=cfg.get("comet_exp_name", "csiro"),
         verbose=bool(cfg.get("verbose", False)),
         tfms_fn = tfms,
@@ -107,8 +110,16 @@ def train_cv(
         if kwargs["comet_exp_name"] is not None:
             kwargs["comet_exp_name"] = f"{kwargs['comet_exp_name']}-{sweep_id}"
 
-        fold_scores, mean, std = run_groupkfold_cv(**kwargs)
-        outputs.append(dict(sweep_config=kwargs["sweep_config"], fold_scores=fold_scores, mean=mean, std=std))
+        result = run_groupkfold_cv(return_details=True, **kwargs)
+        outputs.append(
+            dict(
+                sweep_config=kwargs["sweep_config"],
+                fold_model_scores=result["fold_model_scores"],
+                fold_scores=result["fold_scores"],
+                mean=result["mean"],
+                std=result["std"],
+                states=result["states"],
+            )
+        )
 
     return outputs
-

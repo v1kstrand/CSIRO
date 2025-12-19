@@ -58,7 +58,8 @@ def main() -> None:
     ap.add_argument("--num-neck", type=int, default=DEFAULTS["num_neck"])
 
     ap.add_argument("--swa-epochs", type=int, default=DEFAULTS["swa_epochs"])
-    ap.add_argument("--swa-lr", type=float, default=DEFAULTS["swa_lr"])
+    ap.add_argument("--swa-lr-start", type=float, default=DEFAULTS["swa_lr_start"])
+    ap.add_argument("--swa-lr-final", type=float, default=DEFAULTS["swa_lr_final"])
     ap.add_argument("--swa-anneal-epochs", type=int, default=DEFAULTS["swa_anneal_epochs"])
     ap.add_argument("--swa-load-best", action="store_true", default=DEFAULTS["swa_load_best"])
     ap.add_argument("--swa-eval-freq", type=int, default=DEFAULTS["swa_eval_freq"])
@@ -103,7 +104,8 @@ def main() -> None:
         head_drop=args.head_drop,
         num_neck=args.num_neck,
         swa_epochs=args.swa_epochs,
-        swa_lr=args.swa_lr,
+        swa_lr_start=args.swa_lr_start,
+        swa_lr_final=args.swa_lr_final,
         swa_anneal_epochs=args.swa_anneal_epochs,
         swa_load_best=args.swa_load_best,
         swa_eval_freq=args.swa_eval_freq,
@@ -137,4 +139,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -26,7 +26,7 @@ def eval_global_wr2(model, dl_va, w_vec: torch.Tensor, device: str | torch.devic
             y_log = y_log.to(device, non_blocking=True)
             p_log = model(x).float()
 
-            y = torch.expm1(y_log)
+            y = torch.expm1(y_log.float())
             p = torch.expm1(p_log).clamp_min(0.0)
 
             w = w5.expand_as(y)
