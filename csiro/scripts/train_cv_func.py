@@ -88,7 +88,7 @@ def train_cv(
         swa_anneal_epochs=int(cfg["swa_anneal_epochs"]),
         swa_load_best=bool(cfg.get("swa_load_best", True)),
         swa_eval_freq=int(cfg.get("swa_eval_freq", 2)),
-        clip_val=cfg.get("clip_val", None),
+        clip_val=cfg.get("clip_val", 3.0),
         comet_exp_name=cfg.get("comet_exp_name", "csiro"),
         verbose=bool(cfg.get("verbose", False)),
         tfms_fn = tfms,
