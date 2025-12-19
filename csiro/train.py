@@ -225,10 +225,8 @@ def train_one_fold(
         score = float(eval_global_wr2(model, dl_va, criterion.w, device=device))
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
-            comet_exp.log_metrics(
-                {f"train_loss_{curr_fold}": float(train_loss), f"val_wR2_{curr_fold}": float(score)},
-                step=int(ep),
-            )
+            p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss), f"x_val_wR2_cv{curr_fold}_m{model_idx}": float(score)}
+            comet_exp.log_metrics(p, step=int(ep))
 
         if score > best_score:
             best_score = score
@@ -282,9 +280,7 @@ def train_one_fold(
     p_bar = tqdm(range(1, total_swa_epochs + 1))
     swa_score = None
     for k in p_bar:
-        if anneal_epochs <= 0:
-            swa_lr = float(swa_lr_final)
-        elif int(k) <= anneal_epochs:
+        if int(k) > anneal_epochs:
             swa_lr = cos_sin_lr(int(k), int(anneal_epochs), float(swa_lr_start), float(swa_lr_final))
         else:
             swa_lr = float(swa_lr_final)
@@ -323,7 +319,7 @@ def train_one_fold(
         swa_model.update_parameters(model)
 
         if comet_exp is not None:
-            comet_exp.log_metrics({f"swa_train_loss_{curr_fold}": float(swa_loss)}, step=int(k))
+            comet_exp.log_metrics({f"x_swa_train_loss_cv{curr_fold}": float(swa_loss)}, step=int(k))
 
         s2 = f"[fold {fold_idx} | model {int(model_idx)}] | swa_loss={swa_loss:.4f}"
         if verbose:
@@ -333,7 +329,7 @@ def train_one_fold(
         if int(swa_eval_freq) > 0 and (int(k) % int(swa_eval_freq) == 0):
             swa_score = float(eval_global_wr2(swa_model, dl_va, criterion.w, device=device))
             if comet_exp is not None:
-                comet_exp.log_metrics({f"swa_wR2_{curr_fold}": float(swa_score)}, step=int(k))
+                comet_exp.log_metrics({f"swa_wR2_cv{curr_fold}": float(swa_score)}, step=int(k))
 
     p_bar.close()
 
