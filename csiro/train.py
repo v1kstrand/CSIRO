@@ -14,9 +14,9 @@ from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import DEFAULT_SEED, default_num_workers
+from .config import DEFAULT_SEED, default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS
 from .data import TransformView
-from .losses import WeightedMSELoss
+from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
 from .transforms import post_tfms, train_tfms
@@ -147,6 +147,9 @@ def train_one_fold(
     swa_eval_freq: int = 2,
     model_idx: int = 0,
     return_state: bool = False,
+    wide_df = None,
+    w_std_alpha: float = -1.,
+    smooth_l1_beta: float = -1.
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -174,9 +177,26 @@ def train_one_fold(
         num_neck=int(num_neck),
     ).to(device)
     model.init()
+    
+    w_loss = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)
+    eval_w = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
+    if w_std_alpha >= 0:
+        if wide_df is None:
+            raise ValueError("wide_df is required when w_std_alpha >= 0.")
+        y_tr = wide_df.iloc[tr_idx][TARGETS].to_numpy(dtype=np.float32)
+        y_tr_t = torch.from_numpy(y_tr)                                       # float32 CPU
+        y_tr_log = torch.log1p(y_tr_t)                                        # [N_tr, 5]
 
-    criterion = WeightedMSELoss().to(device)
+        std_t = y_tr_log.std(dim=0, unbiased=False)
+        w_loss = std_balanced_weights(w_loss, std_t, alpha=float(w_std_alpha))
+    
+    if smooth_l1_beta < 0:
+        criterion = WeightedMSELoss(weights=w_loss).to(device)
+    else:
+        criterion = WeightedSmoothL1Loss(weights=w_loss, beta=float(smooth_l1_beta)).to(device)
+    
     trainable_params = _trainable_params_list(model)
+    
     opt = torch.optim.AdamW(trainable_params, lr=float(lr_start), weight_decay=float(wd))
     scaler = grad_scaler(device)
 
@@ -222,7 +242,7 @@ def train_one_fold(
 
         train_loss = running / max(int(n_seen), 1)
         model.set_train(False)
-        score = float(eval_global_wr2(model, dl_va, criterion.w, device=device))
+        score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
             p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss), f"x_val_wR2_cv{curr_fold}_m{model_idx}": float(score)}
@@ -280,7 +300,9 @@ def train_one_fold(
     p_bar = tqdm(range(1, total_swa_epochs + 1))
     swa_score = None
     for k in p_bar:
-        if int(k) > anneal_epochs:
+        if anneal_epochs <= 0:
+            swa_lr = float(swa_lr_final)
+        elif int(k) <= anneal_epochs:
             swa_lr = cos_sin_lr(int(k), int(anneal_epochs), float(swa_lr_start), float(swa_lr_final))
         else:
             swa_lr = float(swa_lr_final)
@@ -325,7 +347,7 @@ def train_one_fold(
         if verbose:
             print(s2)
         if int(swa_eval_freq) > 0 and (int(k) % int(swa_eval_freq) == 0):
-            swa_score = float(eval_global_wr2(swa_model, dl_va, criterion.w, device=device))
+            swa_score = float(eval_global_wr2(swa_model, dl_va, eval_w, device=device))
             if comet_exp is not None:
                 comet_exp.log_metrics({f"swa_wR2_cv{curr_fold}_m{model_idx}": float(swa_score)}, step=int(k))
                 p_bar.set_postfix_str(s2 + f" | swa_wR2={swa_score:.4f}")
@@ -335,7 +357,7 @@ def train_one_fold(
     p_bar.close()
 
     if swa_score is None or int(swa_eval_freq) <= 0 or (int(k) % int(swa_eval_freq) != 0):
-        swa_score = float(eval_global_wr2(swa_model, dl_va, criterion.w, device=device))
+        swa_score = float(eval_global_wr2(swa_model, dl_va, eval_w, device=device))
 
     swa_state = _save_parts(swa_model.module)
     if save_path:
@@ -514,20 +536,16 @@ def run_groupkfold_cv(
 
     comet_exp = None
     if comet_exp_name is not None:
-        try:
-            import comet_ml  # type: ignore
+        import comet_ml  # type: ignore
 
-            comet_exp = comet_ml.start(
-                api_key=os.getenv("COMET_API_KEY"),
-                project_name=comet_exp_name,
-                experiment_key=None,
-            )
-            for k, v in train_kwargs.items():
-                if isinstance(v, (int, float, str)):
-                    comet_exp.log_parameter(k, v)
-            
-        except Exception as e:
-            raise ImportError(f"{e}") from e
+        comet_exp = comet_ml.start(
+            api_key=os.getenv("COMET_API_KEY"),
+            project_name=comet_exp_name,
+            experiment_key=None,
+        )
+        for k, v in train_kwargs.items():
+            if isinstance(v, (int, float, str)):
+                comet_exp.log_parameter(k, v)
 
     fold_scores: list[float] = []
     fold_model_scores: list[list[float]] = []
@@ -541,8 +559,14 @@ def run_groupkfold_cv(
         for fold_idx, (tr_idx, va_idx) in enumerate(sgkf.split(X, y, groups)):
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
+            
+            
+            
+            
+            
             for model_idx in range(int(n_models)):
                 result = train_one_fold(
+                    wide_df=wide_df,
                     ds_tr_view=ds_tr_view,
                     ds_va_view=ds_va_view,
                     tr_idx=tr_idx,
@@ -620,6 +644,5 @@ def run_groupkfold_cv(
             "std": float(scores.std(ddof=0)),
             "states": fold_states,
         }
-        
         
     return scores, float(scores.mean()), float(scores.std(ddof=0))

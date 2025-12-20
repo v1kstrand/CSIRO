@@ -92,6 +92,8 @@ def train_cv(
         swa_eval_freq=int(cfg.get("swa_eval_freq", 2)),
         clip_val=cfg.get("clip_val", 3.0),
         n_models=int(cfg.get("n_models", 1)),
+        w_std_alpha=float(cfg.get("w_std_alpha", -1.0)),
+        smooth_l1_beta=float(cfg.get("smooth_l1_beta", -1.0)),
         comet_exp_name=cfg.get("comet_exp_name", "csiro"),
         verbose=bool(cfg.get("verbose", False)),
         tfms_fn = tfms,
