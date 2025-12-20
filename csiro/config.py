@@ -66,19 +66,13 @@ DEFAULTS: dict[str, Any] = dict(
 )
 
 # Sweep definitions with transform choice by name (avoids circular import)
-SWEEPS: list[dict[str, object]] = [
-    dict(num_neck=1, head_depth=4)
-]
+SWEEPS: list[dict[str, object]] = [dict()]
 
 def default_num_workers(reserve: int = 2) -> int:
     import os
 
     n = (os.cpu_count() or 0) - int(reserve)
     return max(0, n)
-
-
-def as_tuple_str(xs: Sequence[str]) -> tuple[str, ...]:
-    return tuple(str(x) for x in xs)
 
 
 def dino_weights_path(*, repo_dir: str, model_size: str, plus: str) -> str:

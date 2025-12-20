@@ -559,11 +559,6 @@ def run_groupkfold_cv(
         for fold_idx, (tr_idx, va_idx) in enumerate(sgkf.split(X, y, groups)):
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
-            
-            
-            
-            
-            
             for model_idx in range(int(n_models)):
                 result = train_one_fold(
                     wide_df=wide_df,
@@ -578,6 +573,8 @@ def run_groupkfold_cv(
                     return_state=True,
                     **train_kwargs,
                 )
+                if result == float("nan"):
+                    return
                 model_scores.append(float(result["score"]))
                 model_states.append(
                     dict(
