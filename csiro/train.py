@@ -522,6 +522,7 @@ def run_groupkfold_cv(
     n_models: int = 1,
     img_size: int | None = None,
     return_details: bool = False,
+    save_output_dir: str | None = None,
     **train_kwargs,
 ):
     sgkf = StratifiedGroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
@@ -556,9 +557,11 @@ def run_groupkfold_cv(
     fold_model_scores: list[list[float]] = []
     fold_states: list[list[dict[str, Any]]] = []
     try:
+        uid = "_" + str(uuid.uuid4())[:3]
+        exp_name = sweep_config + uid
         if comet_exp is not None:
-            uid = "_" + str(uuid.uuid4())[:3]
-            comet_exp.set_name(comet_exp_name + "_" + sweep_config + uid)
+            exp_name = comet_exp_name + "_" + exp_name
+            comet_exp.set_name(exp_name)
 
         for fold_idx, (tr_idx, va_idx) in enumerate(sgkf.split(X, y, groups)):
             model_scores: list[float] = []
@@ -645,5 +648,19 @@ def run_groupkfold_cv(
             "std": float(scores.std(ddof=0)),
             "states": fold_states,
         }
+        
+    if save_output_dir is not None:
+        os.makedirs(save_output_dir, exist_ok=True)
+        save_output_path = os.path.join(save_output_dir, exp_name + ".pt")
+        torch.save(
+            {
+                "fold_scores": scores,
+                "fold_model_scores": fold_model_scores,
+                "mean": float(scores.mean()),
+                "std": float(scores.std(ddof=0)),
+                "states": fold_states,
+            },
+            save_output_path,
+        )
         
     return scores, float(scores.mean()), float(scores.std(ddof=0))

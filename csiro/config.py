@@ -63,6 +63,7 @@ DEFAULTS: dict[str, Any] = dict(
     seed=DEFAULT_SEED,
     img_size=DEFAULT_IMG_SIZE,
     dtype=DEFAULT_DTYPE_STR,
+    save_output_dir="/notebooks/kaggle/csiro/output",
 )
 
 # Sweep definitions with transform choice by name (avoids circular import)
