@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -103,14 +102,11 @@ def train_cv(
     if overrides:
         base_kwargs.update(overrides)
 
-    sweep_id = str(uuid.uuid4())[:4]
     outputs: list[dict[str, Any]] = []
     for sweep in sweeps or SWEEPS:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
         kwargs["sweep_config"] = str(sweep)
-        if kwargs["comet_exp_name"] is not None:
-            kwargs["comet_exp_name"] = f"{kwargs['comet_exp_name']}-{sweep_id}"
 
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(

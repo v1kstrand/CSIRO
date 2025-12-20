@@ -4,6 +4,7 @@ import copy
 import math
 import os
 from typing import Any, Callable
+import uuid
 
 import numpy as np
 import torch
@@ -537,6 +538,10 @@ def run_groupkfold_cv(
     comet_exp = None
     if comet_exp_name is not None:
         import comet_ml  # type: ignore
+        
+        if "uid" in comet_exp_name:
+            uid = "_" + str(uuid.uuid4())[:3]
+            comet_exp_name = comet_exp_name.replace("uid", "") + uid
 
         comet_exp = comet_ml.start(
             api_key=os.getenv("COMET_API_KEY"),
@@ -552,9 +557,8 @@ def run_groupkfold_cv(
     fold_states: list[list[dict[str, Any]]] = []
     try:
         if comet_exp is not None:
-            import uuid
-
-            comet_exp.set_name(comet_exp_name + "_" + sweep_config + "_" + str(uuid.uuid4())[:3])
+            uid = "_" + str(uuid.uuid4())[:3]
+            comet_exp.set_name(comet_exp_name + "_" + sweep_config + uid)
 
         for fold_idx, (tr_idx, va_idx) in enumerate(sgkf.split(X, y, groups)):
             model_scores: list[float] = []
