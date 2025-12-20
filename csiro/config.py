@@ -4,15 +4,15 @@ from typing import Any, Sequence
 import os, yaml
 
 
-TARGETS: tuple[str, ...] = ("Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g")
-IDX_COLS: tuple[str, ...] = (
+TARGETS: list[str] = ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g"]
+IDX_COLS: list[str] = [
     "image_path",
     "Sampling_Date",
     "State",
     "Species",
     "Pre_GSHH_NDVI",
     "Height_Ave_cm",
-)
+])
 
 IMAGENET_MEAN: tuple[float, float, float] = (0.485, 0.456, 0.406)
 IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
