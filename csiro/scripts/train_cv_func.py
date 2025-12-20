@@ -106,12 +106,12 @@ def train_cv(
     for sweep in sweeps or SWEEPS:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
-        kwargs["sweep_config"] = str(sweep)
+        kwargs["config_name"] = str(sweep)
 
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(
             dict(
-                sweep_config=kwargs["sweep_config"],
+                config_name=kwargs["config_name"],
                 fold_model_scores=result["fold_model_scores"],
                 fold_scores=result["fold_scores"],
                 mean=result["mean"],

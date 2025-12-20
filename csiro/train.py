@@ -518,7 +518,7 @@ def run_groupkfold_cv(
     stratify_col: str = "State",
     tfms_fn: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
-    sweep_config: str = "",
+    config_name: str = "",
     n_models: int = 1,
     img_size: int | None = None,
     return_details: bool = False,
@@ -558,7 +558,7 @@ def run_groupkfold_cv(
     fold_states: list[list[dict[str, Any]]] = []
     try:
         uid = "_" + str(uuid.uuid4())[:3]
-        exp_name = sweep_config + uid
+        exp_name = config_name + uid
         if comet_exp is not None:
             exp_name = comet_exp_name + "_" + exp_name
             comet_exp.set_name(exp_name)
@@ -597,8 +597,6 @@ def run_groupkfold_cv(
                         best_score=float(result["best_score"]),
                         swa_score=result["swa_score"],
                         best_state=result["best_state"],
-                        best_opt_state=result["best_opt_state"],
-                        opt_state=result["opt_state"],
                         used_swa=bool(result["used_swa"]),
                     )
                 )
@@ -640,14 +638,7 @@ def run_groupkfold_cv(
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
-    if return_details:
-        return {
-            "fold_scores": scores,
-            "fold_model_scores": fold_model_scores,
-            "mean": float(scores.mean()),
-            "std": float(scores.std(ddof=0)),
-            "states": fold_states,
-        }
+
         
     if save_output_dir is not None:
         os.makedirs(save_output_dir, exist_ok=True)
@@ -663,4 +654,11 @@ def run_groupkfold_cv(
             save_output_path,
         )
         
-    return scores, float(scores.mean()), float(scores.std(ddof=0))
+    if return_details:
+        return {
+            "fold_scores": scores,
+            "fold_model_scores": fold_model_scores,
+            "mean": float(scores.mean()),
+            "std": float(scores.std(ddof=0)),
+            "states": fold_states,
+        }
