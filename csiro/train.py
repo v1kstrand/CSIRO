@@ -580,8 +580,9 @@ def run_groupkfold_cv(
                     return_state=True,
                     **train_kwargs,
                 )
-                if result == float("nan"):
+                if isinstance(result, float) and math.isnan(result):
                     return
+                
                 model_scores.append(float(result["score"]))
                 model_states.append(
                     dict(
