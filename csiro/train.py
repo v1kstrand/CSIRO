@@ -602,6 +602,12 @@ def run_groupkfold_cv(
                 
             )
             fold_scores.append(float(fold_score))
+            if comet_exp is not None:
+                comet_exp.log_metric("0fold_score", fold_score, step=fold_idx)
+                comet_exp.log_metric("0fold_mean", fold_score.mean(), step=fold_idx)
+                comet_exp.log_metric("0fold_std", fold_score.std(), step=fold_idx)
+            
+            
     finally:
         if comet_exp is not None:
             comet_exp.end()
@@ -615,4 +621,6 @@ def run_groupkfold_cv(
             "std": float(scores.std(ddof=0)),
             "states": fold_states,
         }
+        
+        
     return scores, float(scores.mean()), float(scores.std(ddof=0))
