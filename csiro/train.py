@@ -602,15 +602,13 @@ def run_groupkfold_cv(
                 
             )
             fold_scores.append(float(fold_score))
-            if comet_exp is not None:
-                fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
-                comet_exp.log_metric("0fold_mean", fold_scores_np.mean(), step=fold_idx)
-                comet_exp.log_metric("0fold_std", fold_scores_np.std(), step=fold_idx)
-
             
             
     finally:
         if comet_exp is not None:
+            fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
+            comet_exp.log_metric("0fold_mean", fold_scores_np.mean(), step=fold_idx)
+            comet_exp.log_metric("0fold_std", fold_scores_np.std(), step=fold_idx)
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
