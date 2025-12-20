@@ -38,7 +38,33 @@ with open(DEFAULT_ENV_PATH, 'r', encoding='utf-8') as f:
 for k, v in env.items():
     os.environ[k] = v
     
-DEFAULTS: dict[str, Any] = dict()
+DEFAULTS: dict[str, Any] = dict(
+    epochs=80,
+    batch_size=124,
+    wd=1e-3,
+    lr_start=3e-4,
+    lr_final=1e-7,
+    early_stopping=15,
+    head_hidden=2048,
+    head_drop=0.1,
+    head_depth=4,
+    num_neck=1,
+    swa_epochs=20,
+    swa_lr_start=None,
+    swa_lr_final=None,
+    swa_anneal_epochs=40,
+    swa_load_best=True,
+    swa_eval_freq=2,
+    clip_val=3.0,
+    n_models=4,
+    w_std_alpha= -1.,
+    smooth_l1_beta= -1.,
+    comet_exp_name="csiro",
+    seed=DEFAULT_SEED,
+    img_size=DEFAULT_IMG_SIZE,
+    dtype=DEFAULT_DTYPE_STR,
+    save_output_dir="/notebooks/kaggle/csiro/output",
+)
 
 # Sweep definitions with transform choice by name (avoids circular import)
 SWEEPS: list[dict[str, object]] = [dict()]
