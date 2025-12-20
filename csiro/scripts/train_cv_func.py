@@ -63,45 +63,22 @@ def train_cv(
         weights=str(dino_weights),
     )
 
-    base_kwargs = dict(
-        dataset=dataset,
-        wide_df=wide_df,
-        backbone=backbone,
-        device=device,
-        img_size=int(cfg["img_size"]),
-        n_splits=int(cfg.get("n_splits", 5)),
-        seed=int(cfg.get("seed")),
-        group_col=str(cfg.get("group_col", "Sampling_Date")),
-        stratify_col=str(cfg.get("stratify_col", "State")),
-        epochs=int(cfg["epochs"]),
-        batch_size=int(cfg["batch_size"]),
-        wd=float(cfg["wd"]),
-        lr_start=float(cfg["lr_start"]),
-        lr_final=float(cfg["lr_final"]),
-        early_stopping=int(cfg["early_stopping"]),
-        head_hidden=int(cfg["head_hidden"]),
-        head_depth=int(cfg["head_depth"]),
-        head_drop=float(cfg["head_drop"]),
-        num_neck=int(cfg["num_neck"]),
-        swa_epochs=int(cfg["swa_epochs"]),
-        swa_lr_start=cfg.get("swa_lr_start", None),
-        swa_lr_final=cfg.get("swa_lr_final", None),
-        swa_anneal_epochs=int(cfg["swa_anneal_epochs"]),
-        swa_load_best=bool(cfg.get("swa_load_best", True)),
-        swa_eval_freq=int(cfg.get("swa_eval_freq", 2)),
-        clip_val=cfg.get("clip_val", 3.0),
-        n_models=int(cfg.get("n_models", 1)),
-        w_std_alpha=float(cfg.get("w_std_alpha", -1.0)),
-        smooth_l1_beta=float(cfg.get("smooth_l1_beta", -1.0)),
-        comet_exp_name=cfg.get("comet_exp_name", "csiro"),
-        verbose=bool(cfg.get("verbose", False)),
-        tfms_fn = tfms,
-        plot_imgs = plot_imgs,
-        save_output_dir="/notebooks/kaggle/csiro/output",
+    base_kwargs = dict(cfg)
+    base_kwargs.pop("dtype", None)
+    base_kwargs.update(
+        dict(
+            dataset=dataset,
+            wide_df=wide_df,
+            backbone=backbone,
+            device=device,
+            tfms_fn=tfms,
+            plot_imgs=plot_imgs,
+        )
     )
     
     if overrides:
         base_kwargs.update(overrides)
+        base_kwargs.pop("dtype", None)
 
     outputs: list[dict[str, Any]] = []
     for sweep in sweeps or SWEEPS:
