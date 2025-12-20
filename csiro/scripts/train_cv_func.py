@@ -96,7 +96,8 @@ def train_cv(
         comet_exp_name=cfg.get("comet_exp_name", "csiro"),
         verbose=bool(cfg.get("verbose", False)),
         tfms_fn = tfms,
-        plot_imgs = plot_imgs
+        plot_imgs = plot_imgs,
+        save_output_dir="/notebooks/kaggle/csiro/output",
     )
     
     if overrides:

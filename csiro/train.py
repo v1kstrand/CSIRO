@@ -639,8 +639,6 @@ def run_groupkfold_cv(
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
-
-        
     if save_output_dir is not None:
         os.makedirs(save_output_dir, exist_ok=True)
         save_output_path = os.path.join(save_output_dir, exp_name + ".pt")
