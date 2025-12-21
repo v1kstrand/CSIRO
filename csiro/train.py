@@ -513,7 +513,6 @@ def run_groupkfold_cv(
     dataset,
     wide_df,
     n_splits: int = 5,
-    seed: int = CV_SPLIT_SEED,
     group_col: str = "Sampling_Date",
     tfms_fn: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,

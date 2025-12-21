@@ -65,7 +65,6 @@ DEFAULTS: dict[str, Any] = dict(
     w_std_alpha= -1.,
     smooth_l1_beta= -1.,
     comet_exp_name="csiro",
-    seed=DEFAULT_SEED,
     img_size=DEFAULT_IMG_SIZE,
     dtype=DEFAULT_DTYPE_STR,
     save_output_dir="/notebooks/kaggle/csiro/output",
