@@ -526,37 +526,6 @@ def run_groupkfold_cv(
 ):
     gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(CV_SPLIT_SEED))
     groups = wide_df[group_col].values
-    
-    rows = []
-    splits = list(gkf.split(wide_df, groups=groups))
-    for k, (tr_idx, va_idx) in enumerate(splits):
-        tr = wide_df.iloc[tr_idx]
-        va = wide_df.iloc[va_idx]
-
-        # no leak check
-        leak = len(set(tr[group_col]) & set(va[group_col]))
-
-        clover_pos = (va["Dry_Clover_g"] > 0).mean()
-        ltot = np.log1p(va["Dry_Total_g"].astype(float))
-
-        rows.append({
-            "fold": k,
-            "n_val": len(va),
-            "n_dates": va[group_col].nunique(),
-            "group_leak": leak,
-            "clover_pos_rate": float(clover_pos),
-            "log1p_total_q50": float(np.quantile(ltot, 0.50)),
-            "log1p_total_q90": float(np.quantile(ltot, 0.90)),
-            "log1p_total_q99": float(np.quantile(ltot, 0.99)),
-            "total_max": float(va["Dry_Total_g"].max()),
-            "state_top_frac": float(va["State"].value_counts(normalize=True).iloc[0]),
-            "states": ",".join(sorted(va["State"].unique())),
-        })
-
-    import pandas as pd
-    rep = pd.DataFrame(rows)
-    print("seed:", CV_SPLIT_SEED)
-    print(rep)
 
     if tfms_fn is None:
         tfms_fn = train_tfms
