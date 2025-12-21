@@ -525,11 +525,11 @@ def run_groupkfold_cv(
     **train_kwargs,
 ):
     gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
-    X = wide_df
     groups = wide_df[group_col].values
     
     rows = []
-    for k, (tr_idx, va_idx) in enumerate(gkf):
+    splits = list(gkf.split(wide_df, groups=groups))
+    for k, (tr_idx, va_idx) in enumerate(splits):
         tr = wide_df.iloc[tr_idx]
         va = wide_df.iloc[va_idx]
 
@@ -591,7 +591,7 @@ def run_groupkfold_cv(
             exp_name = comet_exp_name + "_" + exp_name
             comet_exp.set_name(exp_name)
 
-        for fold_idx, (tr_idx, va_idx) in enumerate(gkf.split(X, groups=groups)):
+        for fold_idx, (tr_idx, va_idx) in enumerate(gkf.split(wide_df, groups=groups)):
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             for model_idx in range(int(n_models)):
