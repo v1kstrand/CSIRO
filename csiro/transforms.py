@@ -98,6 +98,6 @@ train_tfms_dict = {
     "v2": train_tfms_v2,
     "v3": train_tfms_v3,
     "v4": train_tfms_v4,
-    "v5": train_tfms_v5
+    "v5": train_tfms_v5,
     "v6": train_tfms_v6
 }
