@@ -71,7 +71,7 @@ def train_cv(
             wide_df=wide_df,
             backbone=backbone,
             device=device,
-            tfms_fn=tfms,
+            tfms=tfms,
             plot_imgs=plot_imgs,
         )
      )

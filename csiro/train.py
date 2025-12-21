@@ -514,7 +514,7 @@ def run_groupkfold_cv(
     wide_df,
     n_splits: int = 5,
     group_col: str = "Sampling_Date",
-    tfms_fn: Callable[[], T.Compose] | None = None,
+    tfms: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
     n_models: int = 1,
@@ -526,11 +526,11 @@ def run_groupkfold_cv(
     gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(CV_SPLIT_SEED))
     groups = wide_df[group_col].values
 
-    if tfms_fn is None:
+    if tfms is None:
         tfms_fn = train_tfms_dict["default"]
     else:
         assert isinstance(tfms_fn, str)
-        tfms_fn = train_tfms_dict[tfms_fn]
+        tfms_fn = train_tfms_dict[tfms]
         
 
     ds_tr_view = TransformView(dataset, T.Compose([tfms_fn(), post_tfms()]))
