@@ -9,13 +9,13 @@ import uuid
 import numpy as np
 import torch
 import torchvision.transforms as T
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import GroupKFold
 from torch.optim.swa_utils import AveragedModel
 from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import DEFAULT_SEED, default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS
+from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, CV_SPLIT_SEED
 from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
@@ -513,7 +513,7 @@ def run_groupkfold_cv(
     dataset,
     wide_df,
     n_splits: int = 5,
-    seed: int = DEFAULT_SEED,
+    seed: int = CV_SPLIT_SEED,
     group_col: str = "Sampling_Date",
     stratify_col: str = "State",
     tfms_fn: Callable[[], T.Compose] | None = None,
@@ -525,9 +525,8 @@ def run_groupkfold_cv(
     save_output_dir: str | None = None,
     **train_kwargs,
 ):
-    sgkf = StratifiedGroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
+    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
     X = wide_df
-    y = wide_df[stratify_col].values
     groups = wide_df[group_col].values
 
     if tfms_fn is None:
@@ -563,7 +562,7 @@ def run_groupkfold_cv(
             exp_name = comet_exp_name + "_" + exp_name
             comet_exp.set_name(exp_name)
 
-        for fold_idx, (tr_idx, va_idx) in enumerate(sgkf.split(X, y, groups)):
+        for fold_idx, (tr_idx, va_idx) in enumerate(gkf.split(X, groups=groups)):
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             for model_idx in range(int(n_models)):
