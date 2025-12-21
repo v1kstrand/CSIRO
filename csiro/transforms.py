@@ -41,6 +41,7 @@ def train_tfms():
         ]
     )
     
+
 def train_tfms_v1():
     return T.Compose(
         [
@@ -53,7 +54,7 @@ def train_tfms_v2():
     return T.Compose(
         [
             base_train_comp,
-            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.01),
+            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.035),
         ]
     )
     
@@ -79,6 +80,14 @@ def train_tfms_v5():
             base_train_comp,
         ]
     )
+    
+def train_tfms_v6():
+    return T.Compose(
+        [
+            base_train_comp,
+            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        ]
+    )
 
 def post_tfms(mean=IMAGENET_MEAN, std=IMAGENET_STD):
     return T.Compose([T.ToTensor(), T.Normalize(mean=mean, std=std)])
@@ -90,4 +99,5 @@ train_tfms_dict = {
     "v3": train_tfms_v3,
     "v4": train_tfms_v4,
     "v5": train_tfms_v5
+    "v6": train_tfms_v6
 }
