@@ -45,7 +45,7 @@ def train_tfms_v1():
     return T.Compose(
         [
             base_train_comp,
-            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02),
         ]
     )
     
@@ -69,7 +69,7 @@ def train_tfms_v4():
     return T.Compose(
         [
             base_train_comp,
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.035),
         ]
     )
     
