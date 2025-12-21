@@ -20,7 +20,7 @@ from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
-from .transforms import post_tfms, train_tfms
+from .transforms import post_tfms, train_tfms_dict
 
 
 def cos_sin_lr(ep: int, epochs: int, lr_start: float, lr_final: float) -> float:
@@ -527,7 +527,11 @@ def run_groupkfold_cv(
     groups = wide_df[group_col].values
 
     if tfms_fn is None:
-        tfms_fn = train_tfms
+        tfms_fn = train_tfms_dict["default"]
+    else:
+        assert isinstance(tfms_fn, str)
+        tfms_fn = train_tfms_dict[tfms_fn]
+        
 
     ds_tr_view = TransformView(dataset, T.Compose([tfms_fn(), post_tfms()]))
     ds_va_view = TransformView(dataset, post_tfms())
