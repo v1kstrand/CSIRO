@@ -515,7 +515,6 @@ def run_groupkfold_cv(
     n_splits: int = 5,
     seed: int = CV_SPLIT_SEED,
     group_col: str = "Sampling_Date",
-    stratify_col: str = "State",
     tfms_fn: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
@@ -528,6 +527,36 @@ def run_groupkfold_cv(
     gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
     X = wide_df
     groups = wide_df[group_col].values
+    
+    rows = []
+    for k, (tr_idx, va_idx) in enumerate(gkf):
+        tr = wide_df.iloc[tr_idx]
+        va = wide_df.iloc[va_idx]
+
+        # no leak check
+        leak = len(set(tr[group_col]) & set(va[group_col]))
+
+        clover_pos = (va["Dry_Clover_g"] > 0).mean()
+        ltot = np.log1p(va["Dry_Total_g"].astype(float))
+
+        rows.append({
+            "fold": k,
+            "n_val": len(va),
+            "n_dates": va[group_col].nunique(),
+            "group_leak": leak,
+            "clover_pos_rate": float(clover_pos),
+            "log1p_total_q50": float(np.quantile(ltot, 0.50)),
+            "log1p_total_q90": float(np.quantile(ltot, 0.90)),
+            "log1p_total_q99": float(np.quantile(ltot, 0.99)),
+            "total_max": float(va["Dry_Total_g"].max()),
+            "state_top_frac": float(va["State"].value_counts(normalize=True).iloc[0]),
+            "states": ",".join(sorted(va["State"].unique())),
+        })
+
+    import pandas as pd
+    rep = pd.DataFrame(rows)
+    print("seed:", seed)
+    print(rep)
 
     if tfms_fn is None:
         tfms_fn = train_tfms

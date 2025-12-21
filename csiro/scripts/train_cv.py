@@ -70,7 +70,6 @@ def main() -> None:
 
     ap.add_argument("--n-splits", type=int, default=5)
     ap.add_argument("--group-col", default="Sampling_Date")
-    ap.add_argument("--stratify-col", default="State")
     ap.add_argument("--seed", type=int, default=DEFAULTS["seed"])
     args = ap.parse_args()
 
@@ -91,7 +90,6 @@ def main() -> None:
         n_splits=args.n_splits,
         seed=args.seed,
         group_col=args.group_col,
-        stratify_col=args.stratify_col,
         device=device,
         epochs=args.epochs,
         batch_size=args.batch_size,

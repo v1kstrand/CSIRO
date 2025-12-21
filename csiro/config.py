@@ -42,7 +42,6 @@ for k, v in env.items():
 DEFAULTS: dict[str, Any] = dict(
     n_splits=5,
     group_col="Sampling_Date",
-    stratify_col="State",
     device="cuda",
     verbose=False,
     epochs=80,
