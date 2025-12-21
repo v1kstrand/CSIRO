@@ -524,7 +524,7 @@ def run_groupkfold_cv(
     save_output_dir: str | None = None,
     **train_kwargs,
 ):
-    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
+    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(CV_SPLIT_SEED))
     groups = wide_df[group_col].values
     
     rows = []
@@ -555,7 +555,7 @@ def run_groupkfold_cv(
 
     import pandas as pd
     rep = pd.DataFrame(rows)
-    print("seed:", seed)
+    print("seed:", CV_SPLIT_SEED)
     print(rep)
 
     if tfms_fn is None:
