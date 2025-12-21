@@ -529,7 +529,7 @@ def run_groupkfold_cv(
     if tfms is None:
         tfms_fn = train_tfms_dict["default"]
     else:
-        assert isinstance(tfms_fn, str)
+        assert isinstance(tfms, str)
         tfms_fn = train_tfms_dict[tfms]
         
 
