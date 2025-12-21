@@ -31,7 +31,7 @@ DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
 DEFAULT_DTYPE_STR: str = "bf16"  # fp16|bf16|fp32
 DEFAULT_ENV_PATH = "/notebooks/env.yaml"
-CV_SPLIT_SEED = 1527
+CV_SPLIT_SEED = 126015# 1527
 
 with open(DEFAULT_ENV_PATH, 'r', encoding='utf-8') as f:
     env = yaml.safe_load(f)
