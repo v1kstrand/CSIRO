@@ -30,7 +30,6 @@ DEFAULT_DATA_ROOT: str = os.environ["DEFAULT_DATA_ROOT"]
 
 DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
-
     
 DEFAULTS: dict[str, Any] = dict(
     n_splits=5,
