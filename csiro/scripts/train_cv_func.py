@@ -40,7 +40,7 @@ def train_cv(
     cfg: dict[str, Any] = dict(DEFAULTS)
     if overrides:
         cfg.update(overrides)
-    dtype_t = parse_dtype(cfg["dtype"])
+    dtype_t = parse_dtype(cfg["amp_dtype"])
     set_dtype(dtype_t)
 
     device = str(cfg.get("device", "cuda"))
@@ -64,7 +64,7 @@ def train_cv(
     )
 
     base_kwargs = dict(cfg)
-    base_kwargs.pop("dtype", None)
+    base_kwargs.pop("amp_dtype", None)
     base_kwargs.update(
         dict(
             dataset=dataset,

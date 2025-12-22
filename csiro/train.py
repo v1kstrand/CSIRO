@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, CV_SPLIT_SEED
+from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, DEFAULTS
 from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
@@ -514,6 +514,7 @@ def run_groupkfold_cv(
     wide_df,
     n_splits: int = 5,
     group_col: str = "Sampling_Date",
+    cv_seed: int | None = None,
     tfms: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
@@ -523,7 +524,9 @@ def run_groupkfold_cv(
     save_output_dir: str | None = None,
     **train_kwargs,
 ):
-    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(CV_SPLIT_SEED))
+    if cv_seed is None:
+        cv_seed = int(DEFAULTS["cv_seed"])
+    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
     groups = wide_df[group_col].values
 
     if tfms is None:
