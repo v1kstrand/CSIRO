@@ -21,12 +21,12 @@ DEFAULT_SEED: int = 420
 DEFAULT_IMG_SIZE: int = 512
 DEFAULT_LOSS_WEIGHTS: tuple[float, float, float, float, float] = (0.1, 0.1, 0.1, 0.2, 0.5)
 
-WB = os.environ["DINO_WB"]
-WL = os.environ["DINO_WL"]
-WL_plus = os.environ["DINO_WL_plus"]
+WB = os.getenv("DINO_WB")
+WL = os.getenv("DINO_WL")
+WL_plus = os.getenv("DINO_WL_plus")
 
-DEFAULT_DINO_REPO_DIR: str = os.environ["DEFAULT_DINO_REPO_DIR"]
-DEFAULT_DATA_ROOT: str = os.environ["DEFAULT_DATA_ROOT"]
+DEFAULT_DINO_REPO_DIR: str = os.getenv("DEFAULT_DINO_REPO_DIR")
+DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
 
 DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
