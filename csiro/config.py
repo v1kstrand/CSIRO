@@ -30,12 +30,6 @@ DEFAULT_DATA_ROOT: str = "/notebooks/kaggle/csiro"
 DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
 DEFAULT_ENV_PATH = "/notebooks/env.yaml"
-
-with open(DEFAULT_ENV_PATH, 'r', encoding='utf-8') as f:
-    env = yaml.safe_load(f)
-
-for k, v in env.items():
-    os.environ[k] = v
     
 DEFAULTS: dict[str, Any] = dict(
     n_splits=5,
@@ -65,7 +59,7 @@ DEFAULTS: dict[str, Any] = dict(
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,
     amp_dtype="bf16",
-    cv_seed=126015,
+    cv_seed=126015, # 1527
     save_output_dir="/notebooks/kaggle/csiro/output",
     tfms=None,
     plot_imgs=False
