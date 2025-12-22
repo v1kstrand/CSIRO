@@ -60,7 +60,7 @@ def train_cv(
         str(dino_repo),
         dino_hub_name(model_size=str(model_size), plus=str(plus)),
         source="local",
-        weights=str(dino_weights),
+        weights=str(dino_weights) ,
     )
 
     base_kwargs = dict(cfg)
