@@ -33,13 +33,13 @@ def train_cv(
     dino_weights: str | None = None,
     model_size: str = DEFAULT_MODEL_SIZE,  # "b" == ViT-Base
     plus: str = DEFAULT_PLUS,
-    tfms = None,
     overrides: dict[str, Any] | None = None,
-    plot_imgs: bool =  False,
     sweeps: dict = None
 ) -> Any:
     
     cfg: dict[str, Any] = dict(DEFAULTS)
+    if overrides:
+        cfg.update(overrides)
     dtype_t = parse_dtype(cfg["dtype"])
     set_dtype(dtype_t)
 
@@ -71,14 +71,8 @@ def train_cv(
             wide_df=wide_df,
             backbone=backbone,
             device=device,
-            tfms=tfms,
-            plot_imgs=plot_imgs,
         )
      )
-    
-    if overrides:
-        base_kwargs.update(overrides)
-        base_kwargs.pop("dtype", None)
 
     outputs: list[dict[str, Any]] = []
     for sweep in sweeps or SWEEPS:

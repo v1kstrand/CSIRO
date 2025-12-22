@@ -21,17 +21,19 @@ class PadToSquare:
 
 
 base_train_comp = T.Compose(
-        [
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomVerticalFlip(p=0.5),
-            T.RandomChoice(
-                [
-                    T.Lambda(lambda x: x),
-                    T.RandomRotation((90, 90)),
-                    T.RandomRotation((180, 180)),
-                    T.RandomRotation((270, 270)),
-                ]
-            ),])
+    [
+        T.RandomHorizontalFlip(p=0.5),
+        T.RandomVerticalFlip(p=0.5),
+        T.RandomChoice(
+            [
+                T.Lambda(lambda x: x),
+                T.Lambda(lambda x: x.transpose(Image.ROTATE_90)),
+                T.Lambda(lambda x: x.transpose(Image.ROTATE_180)),
+                T.Lambda(lambda x: x.transpose(Image.ROTATE_270)),
+            ]
+        ),
+    ]
+)
 
 def train_tfms():
     return T.Compose(
