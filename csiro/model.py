@@ -5,6 +5,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from .amp import autocast_context
 
 class DINOv3Regressor(nn.Module):
     def __init__(
@@ -19,9 +20,11 @@ class DINOv3Regressor(nn.Module):
         norm_layer: type[nn.Module] | None = None,
         num_neck: int = 0,
         neck_num_heads: int = 12,
+        backbone_dtype: torch.dtype | None = None,
     ):
         super().__init__()
         self.backbone = backbone
+        self.backbone_dtype = backbone_dtype
 
         feat_dim = feat_dim or getattr(getattr(backbone, "norm", None), "normalized_shape", [None])[0]
         if feat_dim is None:
@@ -94,7 +97,8 @@ class DINOv3Regressor(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            tokens, rope = self._backbone_tokens(x)
+            with autocast_context(x.device, dtype=self.backbone_dtype):
+                tokens, rope = self._backbone_tokens(x)
 
         for block in self.neck:
             try:

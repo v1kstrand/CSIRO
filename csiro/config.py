@@ -58,7 +58,8 @@ DEFAULTS: dict[str, Any] = dict(
     smooth_l1_beta= -1.,
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,
-    amp_dtype="bf16",
+    backbone_dtype="fp32",
+    trainable_dtype="fp16",
     cv_seed=126015, # 1527
     save_output_dir="/notebooks/kaggle/csiro/output",
     tfms=None,
@@ -96,3 +97,6 @@ def parse_dtype(dtype: str):
     if s in ("fp32", "float32"):
         return torch.float32
     raise ValueError(f"Unknown dtype: {dtype}")
+
+
+DTYPE = parse_dtype(DEFAULTS["trainable_dtype"])

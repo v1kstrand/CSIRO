@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from .amp import DTYPE
+from . import config
 
 @torch.no_grad()
 def eval_global_wr2(model, dl_va, w_vec: torch.Tensor, device: str | torch.device = "cuda") -> float:
@@ -18,7 +18,7 @@ def eval_global_wr2(model, dl_va, w_vec: torch.Tensor, device: str | torch.devic
     device_str = str(device)
     with torch.inference_mode(), torch.amp.autocast(
         device_type="cuda",
-        dtype=DTYPE,
+        dtype=config.DTYPE,
         enabled=device_str.startswith("cuda"),
     ):
         for x, y_log in dl_va:

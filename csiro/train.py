@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, DEFAULTS
+from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, DEFAULTS, parse_dtype
 from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
@@ -90,13 +90,19 @@ def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
     return tfms(x).unsqueeze(0)
 
 
-def _build_model_from_state(backbone, state: dict[str, Any], device: str | torch.device):
+def _build_model_from_state(
+    backbone,
+    state: dict[str, Any],
+    device: str | torch.device,
+    backbone_dtype: torch.dtype | None = None,
+):
     model = DINOv3Regressor(
         backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
         depth=int(state["head_depth"]),
         num_neck=int(state["num_neck"]),
+        backbone_dtype=backbone_dtype,
     ).to(device)
     _load_parts(model, state["parts"])
     return model
@@ -137,6 +143,7 @@ def train_one_fold(
     head_drop: float = 0.1,
     num_neck: int = 0,
     num_workers: int | None = None,
+    backbone_dtype: str | torch.dtype | None = None,
     comet_exp: Any | None = None,
     skip_log_first_n: int = 5,
     curr_fold: int = 0,
@@ -170,12 +177,18 @@ def train_one_fold(
         show_nxn_grid(dataloader=dl_tr, n=4)
         return float("nan")
 
+    if backbone_dtype is None:
+        backbone_dtype = parse_dtype(DEFAULTS["backbone_dtype"])
+    elif isinstance(backbone_dtype, str):
+        backbone_dtype = parse_dtype(backbone_dtype)
+
     model = DINOv3Regressor(
         backbone,
         hidden=int(head_hidden),
         drop=float(head_drop),
         depth=int(head_depth),
         num_neck=int(num_neck),
+        backbone_dtype=backbone_dtype,
     ).to(device)
     model.init()
     
@@ -445,69 +458,6 @@ def eval_global_wr2_ensemble(
     return float(score)
 
 
-@torch.no_grad()
-def predict_ensemble(
-    data,
-    states: list[dict[str, Any]],
-    backbone,
-    *,
-    batch_size: int = 128,
-    num_workers: int | None = None,
-    device: str | torch.device = "cuda",
-    tta_rot90: bool = True,
-    tta_agg: str = "mean",
-    ens_agg: str = "mean",
-) -> torch.Tensor:
-    if states and isinstance(states[0], list):
-        states = [s for fold in states for s in fold]
-
-    if isinstance(data, DataLoader):
-        dl = data
-    else:
-        num_workers = default_num_workers() if num_workers is None else int(num_workers)
-        dl = DataLoader(
-            data,
-            shuffle=False,
-            batch_size=int(batch_size),
-            pin_memory=str(device).startswith("cuda"),
-            num_workers=num_workers,
-            persistent_workers=(num_workers > 0),
-        )
-
-    models = [_build_model_from_state(backbone, s, device) for s in states]
-    for model in models:
-        if hasattr(model, "set_train"):
-            model.set_train(False)
-        model.eval()
-
-    tfms = post_tfms()
-    n_rots = 4 if tta_rot90 else 1
-    preds: list[torch.Tensor] = []
-    with torch.inference_mode(), autocast_context(device):
-        for batch in dl:
-            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                x = batch[0]
-            else:
-                x = batch
-
-            x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
-
-            preds_models: list[torch.Tensor] = []
-            for model in models:
-                preds_rots: list[torch.Tensor] = []
-                for k in range(n_rots):
-                    x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
-                    p_log = model(x_rot).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
-                    preds_rots.append(p)
-                preds_models.append(_agg_stack(preds_rots, tta_agg))
-
-            p_ens = _agg_stack(preds_models, ens_agg)
-            preds.append(p_ens.detach().cpu())
-
-    return torch.cat(preds, dim=0)
-
-
 def run_groupkfold_cv(
     *,
     dataset,
@@ -515,6 +465,7 @@ def run_groupkfold_cv(
     n_splits: int = 5,
     group_col: str = "Sampling_Date",
     cv_seed: int | None = None,
+    backbone_dtype: str | torch.dtype | None = None,
     tfms: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
@@ -580,6 +531,7 @@ def run_groupkfold_cv(
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
                     model_idx=int(model_idx),
+                    backbone_dtype=backbone_dtype,
                     return_state=True,
                     **train_kwargs,
                 )
@@ -620,7 +572,14 @@ def run_groupkfold_cv(
                 persistent_workers=(num_workers > 0),
             )
 
-            models = [_build_model_from_state(train_kwargs["backbone"], s, train_kwargs["device"]) for s in model_states]
+            if backbone_dtype is None:
+                backbone_dtype = train_kwargs.get("backbone_dtype", DEFAULTS["backbone_dtype"])
+            if isinstance(backbone_dtype, str):
+                backbone_dtype = parse_dtype(backbone_dtype)
+            models = [
+                _build_model_from_state(train_kwargs["backbone"], s, train_kwargs["device"], backbone_dtype)
+                for s in model_states
+            ]
             criterion = WeightedMSELoss().to(train_kwargs["device"])
             fold_score = eval_global_wr2_ensemble(
                 models,

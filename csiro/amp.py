@@ -5,22 +5,22 @@ from typing import ContextManager
 
 import torch
 
-DTYPE: torch.dtype = torch.float16
+from . import config
 
 
 def set_dtype(dtype: torch.dtype) -> None:
-    global DTYPE
-    DTYPE = dtype
+    config.DTYPE = dtype
 
 
-def autocast_context(device: str | torch.device) -> ContextManager:
+def autocast_context(device: str | torch.device, dtype: torch.dtype | None = None) -> ContextManager:
     device_str = str(device)
     if device_str.startswith("cuda"):
-        return torch.amp.autocast(device_type="cuda", dtype=DTYPE, enabled=True)
+        use_dtype = config.DTYPE if dtype is None else dtype
+        return torch.amp.autocast(device_type="cuda", dtype=use_dtype, enabled=True)
     return nullcontext()
 
 
 def grad_scaler(device: str | torch.device) -> torch.cuda.amp.GradScaler:
     device_str = str(device)
-    enabled = device_str.startswith("cuda") and DTYPE == torch.float16
+    enabled = device_str.startswith("cuda") and config.DTYPE == torch.float16
     return torch.amp.GradScaler(enabled=enabled)
