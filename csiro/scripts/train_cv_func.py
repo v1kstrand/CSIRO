@@ -50,6 +50,8 @@ def train_cv(
     if csv is None:
         csv = os.path.join(root, "train.csv")
     if dino_weights is None:
+        dino_weights = cfg.get("dino_weights_path")
+    if dino_weights is None:
         dino_weights = dino_weights_path(repo_dir=dino_repo, model_size=model_size, plus=plus)
 
     sys.path.insert(0, str(dino_repo))
