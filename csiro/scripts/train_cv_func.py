@@ -18,6 +18,7 @@ from csiro.config import (
     DEFAULT_PLUS,
     DEFAULTS,
     SWEEPS,
+    DINO_WEIGHTS_PATH,
     dino_hub_name,
     dino_weights_path,
     parse_dtype,
@@ -50,7 +51,7 @@ def train_cv(
     if csv is None:
         csv = os.path.join(root, "train.csv")
     if dino_weights is None:
-        dino_weights = cfg.get("dino_weights_path")
+        dino_weights = DINO_WEIGHTS_PATH
     if dino_weights is None:
         dino_weights = dino_weights_path(repo_dir=dino_repo, model_size=model_size, plus=plus)
 

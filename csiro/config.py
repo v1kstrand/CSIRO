@@ -27,7 +27,7 @@ WL_plus = os.getenv("DINO_WL_plus")
 
 DEFAULT_DINO_REPO_DIR: str = os.getenv("DEFAULT_DINO_REPO_DIR")
 DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
-DEFAULT_DINO_WEIGHTS_PATH: str | None = None
+DINO_WEIGHTS_PATH: str | None = os.getenv("DINO_WEIGHTS_PATH")
 
 DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
@@ -62,7 +62,6 @@ DEFAULTS: dict[str, Any] = dict(
     backbone_dtype="fp32",
     trainable_dtype="fp16",
     cv_seed=126015, # 1527
-    dino_weights_path=DEFAULT_DINO_WEIGHTS_PATH,
     save_output_dir="/notebooks/kaggle/csiro/output",
     tfms=None,
     plot_imgs=False
@@ -78,15 +77,11 @@ def default_num_workers(reserve: int = 2) -> int:
     return max(0, n)
 
 
-def dino_weights_path(
-    *, repo_dir: str | None, model_size: str, plus: str, weights_path: str | None = None
-) -> str:
+def dino_weights_path(*, repo_dir: str | None, model_size: str, plus: str) -> str:
     import os
 
-    if weights_path:
-        return str(weights_path)
     if not repo_dir:
-        raise ValueError("Set dino_weights_path in config or pass dino_repo.")
+        raise ValueError("Set DINO_WEIGHTS_PATH in config/env or pass dino_repo.")
     return os.path.join(repo_dir, "weights", f"dinov3_vit{model_size}16_pretrain{plus}.pth")
 
 
