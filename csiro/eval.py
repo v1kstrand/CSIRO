@@ -130,6 +130,7 @@ def forward_trainable_random(
     tokens_len: int = 197,
     device: str | torch.device = "cuda",
     dtype: torch.dtype | None = None,
+    head_only: bool = False,
 ) -> list[torch.Tensor]:
     if hasattr(model, "set_train"):
         model.set_train(False)
@@ -143,24 +144,24 @@ def forward_trainable_random(
             dtype = torch.float32
 
     feat_dim = int(model.feat_dim)
-    device_str = str(device)
-    g = torch.Generator(device=device) if device_str.startswith("cuda") else torch.Generator()
+    g = torch.Generator()
     g.manual_seed(int(seed))
     x = torch.rand(
         int(batch_size),
         int(tokens_len),
         feat_dim,
         generator=g,
-        device=device,
         dtype=dtype,
     )
-
+    x = x.to(device)
+    
     tokens = x
-    for block in model.neck:
-        try:
-            tokens = block(tokens, None)
-        except TypeError:
-            tokens = block(tokens)
+    if not head_only:
+        for block in model.neck:
+            try:
+                tokens = block(tokens, None)
+            except TypeError:
+                tokens = block(tokens)
     cls = tokens[:, 0, :]
     cls = model.norm(cls)
     y = model.head(cls)
