@@ -245,7 +245,10 @@ def analyze_dataloader_perf(
     total = int(warmup) + int(n_batches)
     for i in range(total):
         t0 = time.perf_counter()
-        batch = next(it)
+        try:
+            batch = next(it)
+        except StopIteration:
+            break
         if include_transfer and device is not None:
             if isinstance(batch, (tuple, list)) and len(batch) >= 1:
                 x = batch[0]
