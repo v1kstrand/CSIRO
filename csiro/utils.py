@@ -209,8 +209,8 @@ def health_check_throughput(
     *,
     dataset=None,
     backbone=None,
-    n_batches: int = 20,
     warmup: int = 2,
+    epochs: int = 1,
     batch_size: int = 32,
     num_workers: int | None = None,
     device: str | torch.device = "cuda",
@@ -314,34 +314,31 @@ def health_check_throughput(
 
     times: list[float] = []
     n_seen = 0
-    for _ in range(int(n_batches)):
-        try:
-            batch = next(it)
-        except StopIteration:
-            it = iter(dl)
-            batch = next(it)
-        if not isinstance(batch, (tuple, list)) or len(batch) < 2:
-            raise ValueError("Dataset must yield (x, y_log) for health_check_throughput.")
-        x, y_log = batch[0], batch[1]
-        t0 = time.perf_counter()
-        x = x.to(device, non_blocking=True)
-        y_log = y_log.to(device, non_blocking=True)
-        opt.zero_grad(set_to_none=True)
-        with autocast_context(device):
-            p_log = model(x)
-            loss = criterion(p_log, y_log)
-        if scaler.is_enabled():
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
-        else:
-            loss.backward()
-            opt.step()
-        if str(device).startswith("cuda"):
-            torch.cuda.synchronize(device)
-        t1 = time.perf_counter()
-        times.append(t1 - t0)
-        n_seen += int(x.size(0))
+    for _ in range(int(max(1, epochs))):
+        it = iter(dl)
+        for batch in it:
+            if not isinstance(batch, (tuple, list)) or len(batch) < 2:
+                raise ValueError("Dataset must yield (x, y_log) for health_check_throughput.")
+            x, y_log = batch[0], batch[1]
+            t0 = time.perf_counter()
+            x = x.to(device, non_blocking=True)
+            y_log = y_log.to(device, non_blocking=True)
+            opt.zero_grad(set_to_none=True)
+            with autocast_context(device):
+                p_log = model(x)
+                loss = criterion(p_log, y_log)
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+            else:
+                loss.backward()
+                opt.step()
+            if str(device).startswith("cuda"):
+                torch.cuda.synchronize(device)
+            t1 = time.perf_counter()
+            times.append(t1 - t0)
+            n_seen += int(x.size(0))
 
     if not times:
         return dict(samples_per_sec=0.0, mean_step_time=0.0, median_step_time=0.0, total_time=0.0)
@@ -356,7 +353,7 @@ def health_check_throughput(
         mean_step_time=mean_step,
         median_step_time=med_step,
         total_time=total,
-        n_batches=int(n_batches),
+        epochs=int(max(1, epochs)),
         batch_size=int(batch_size),
     )
 
