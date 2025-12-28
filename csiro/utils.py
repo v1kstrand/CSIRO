@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Subset
+from PIL import Image
 
 from .amp import autocast_context
 from .config import (
@@ -18,7 +19,7 @@ from .config import (
     dino_hub_name,
     parse_dtype,
 )
-from .data import BiomassBaseCached, load_train_wide
+from .data import BiomassBaseCached, TransformView, load_train_wide
 from .model import DINOv3Regressor
 from .transforms import post_tfms
 
@@ -167,6 +168,14 @@ def analyze_ensemble_redundancy(
         dl = dataset
         idxs = None
     else:
+        sample = dataset[0]
+        if isinstance(sample, (tuple, list)):
+            img0 = sample[0] if sample else None
+            if isinstance(img0, Image.Image):
+                dataset = TransformView(dataset, tfms)
+        elif isinstance(sample, Image.Image):
+            dataset = TransformView(dataset, tfms)
+
         total = len(dataset)
         g = torch.Generator().manual_seed(int(seed))
         if int(n_samples) >= int(total):
