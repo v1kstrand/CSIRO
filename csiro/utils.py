@@ -97,12 +97,10 @@ def _pairwise_stats(preds: torch.Tensor) -> dict[str, float]:
 def load_train_dataset_simple(
     *,
     csv: str | None = None,
-    root: str | None = None,
+    root: str | None = DEFAULT_DATA_ROOT,
     img_size: int | None = None,
     cache_images: bool = True,
 ):
-    if root is None:
-        root = DEFAULT_DATA_ROOT
     if csv is None:
         if root is None:
             raise ValueError("Set root or csv to load the training dataset.")
