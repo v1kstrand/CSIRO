@@ -81,7 +81,7 @@ def train_cv(
     for sweep in sweeps:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
-        kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-:")
+        kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-:")[:40]
 
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(

@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Subset
 from PIL import Image
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
+import time
 
 from .amp import autocast_context
 from .config import (
@@ -187,6 +188,99 @@ def build_color_jitter_sweep(
             )
         )
     return tfms_list
+
+
+def analyze_dataloader_perf(
+    *,
+    dataset=None,
+    batch_size: int = 32,
+    num_workers: int | None = None,
+    device: str | torch.device | None = None,
+    n_batches: int = 50,
+    warmup: int = 5,
+    seed: int = 0,
+    pin_memory: bool | None = None,
+    persistent_workers: bool | None = None,
+    include_transfer: bool = True,
+) -> dict[str, float]:
+    if dataset is None:
+        _, dataset = load_train_dataset_simple()
+
+    tfms = post_tfms()
+    sample = dataset[0]
+    if isinstance(sample, (tuple, list)):
+        img0 = sample[0] if sample else None
+        if isinstance(img0, Image.Image):
+            dataset = TransformView(dataset, tfms)
+    elif isinstance(sample, Image.Image):
+        dataset = TransformView(dataset, tfms)
+
+    num_workers = default_num_workers() if num_workers is None else int(num_workers)
+    if pin_memory is None:
+        pin_memory = str(device).startswith("cuda") if device is not None else False
+    if persistent_workers is None:
+        persistent_workers = num_workers > 0
+
+    dl = DataLoader(
+        dataset,
+        shuffle=False,
+        batch_size=int(batch_size),
+        pin_memory=bool(pin_memory),
+        num_workers=num_workers,
+        persistent_workers=bool(persistent_workers),
+    )
+
+    g = torch.Generator().manual_seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+
+    device = torch.device(device) if device is not None else None
+    if device is not None and device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+    batch_times: list[float] = []
+    n_seen = 0
+    it = iter(dl)
+    total = int(warmup) + int(n_batches)
+    for i in range(total):
+        t0 = time.perf_counter()
+        batch = next(it)
+        if include_transfer and device is not None:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                x = batch[0]
+            else:
+                x = batch
+            if torch.is_tensor(x):
+                x = x.to(device, non_blocking=True)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+        t1 = time.perf_counter()
+        if i >= int(warmup):
+            batch_times.append(t1 - t0)
+            if isinstance(batch, (tuple, list)) and len(batch) >= 1 and torch.is_tensor(batch[0]):
+                n_seen += int(batch[0].size(0))
+            elif torch.is_tensor(batch):
+                n_seen += int(batch.size(0))
+            else:
+                n_seen += int(batch_size)
+
+    if not batch_times:
+        return dict(mean_batch_time=0.0, median_batch_time=0.0, samples_per_sec=0.0)
+
+    times = torch.tensor(batch_times, dtype=torch.float64)
+    mean_bt = float(times.mean().item())
+    med_bt = float(times.median().item())
+    sps = float(n_seen / max(times.sum().item(), 1e-12))
+    return dict(
+        mean_batch_time=mean_bt,
+        median_batch_time=med_bt,
+        samples_per_sec=sps,
+        n_batches=int(n_batches),
+        batch_size=int(batch_size),
+        num_workers=int(num_workers),
+        include_transfer=bool(include_transfer),
+    )
 
 
 @torch.no_grad()
