@@ -196,7 +196,8 @@ def analyze_dataloader_perf(
     batch_size: int = 32,
     num_workers: int | None = None,
     device: str | torch.device | None = None,
-    n_batches: int = 50,
+    epochs: int = 1,
+    max_batches_per_epoch: int | None = None,
     warmup: int = 5,
     seed: int = 0,
     pin_memory: bool | None = None,
@@ -239,28 +240,42 @@ def analyze_dataloader_perf(
     if device is not None and device.type == "cuda":
         torch.cuda.synchronize(device)
 
+    if int(warmup) > 0:
+        it_warm = iter(dl)
+        for _ in range(int(warmup)):
+            try:
+                next(it_warm)
+            except StopIteration:
+                break
+
     batch_times: list[float] = []
+    epoch_times: list[float] = []
+    time_between: list[float] = []
     n_seen = 0
-    it = iter(dl)
-    total = int(warmup) + int(n_batches)
-    for i in range(total):
-        t0 = time.perf_counter()
-        try:
-            batch = next(it)
-        except StopIteration:
-            break
-        if include_transfer and device is not None:
-            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                x = batch[0]
-            else:
-                x = batch
-            if torch.is_tensor(x):
-                x = x.to(device, non_blocking=True)
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-        t1 = time.perf_counter()
-        if i >= int(warmup):
+    epochs = int(max(1, epochs))
+
+    for _ in range(int(epochs)):
+        it = iter(dl)
+        epoch_t0 = time.perf_counter()
+        prev_end: float | None = None
+        for bi, batch in enumerate(it):
+            if max_batches_per_epoch is not None and bi >= int(max_batches_per_epoch):
+                break
+            t0 = time.perf_counter()
+            if prev_end is not None:
+                time_between.append(t0 - prev_end)
+            if include_transfer and device is not None:
+                if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                    x = batch[0]
+                else:
+                    x = batch
+                if torch.is_tensor(x):
+                    x = x.to(device, non_blocking=True)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+            t1 = time.perf_counter()
             batch_times.append(t1 - t0)
+            prev_end = t1
             if isinstance(batch, (tuple, list)) and len(batch) >= 1 and torch.is_tensor(batch[0]):
                 n_seen += int(batch[0].size(0))
             elif torch.is_tensor(batch):
@@ -268,18 +283,36 @@ def analyze_dataloader_perf(
             else:
                 n_seen += int(batch_size)
 
+        if prev_end is None:
+            epoch_times.append(0.0)
+        else:
+            epoch_times.append(prev_end - epoch_t0)
+
     if not batch_times:
-        return dict(mean_batch_time=0.0, median_batch_time=0.0, samples_per_sec=0.0)
+        return dict(
+            mean_batch_time=0.0,
+            median_batch_time=0.0,
+            samples_per_sec=0.0,
+            total_time=0.0,
+            avg_epoch_time=0.0,
+            avg_time_between=0.0,
+        )
 
     times = torch.tensor(batch_times, dtype=torch.float64)
     mean_bt = float(times.mean().item())
     med_bt = float(times.median().item())
     sps = float(n_seen / max(times.sum().item(), 1e-12))
+    total_time = float(sum(epoch_times))
+    avg_epoch = float(total_time / max(len(epoch_times), 1))
+    avg_between = float(sum(time_between) / max(len(time_between), 1))
     return dict(
         mean_batch_time=mean_bt,
         median_batch_time=med_bt,
         samples_per_sec=sps,
-        n_batches=int(n_batches),
+        total_time=total_time,
+        avg_epoch_time=avg_epoch,
+        avg_time_between=avg_between,
+        epochs=int(epochs),
         batch_size=int(batch_size),
         num_workers=int(num_workers),
         include_transfer=bool(include_transfer),
