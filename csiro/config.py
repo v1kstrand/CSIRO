@@ -59,11 +59,12 @@ DEFAULTS: dict[str, Any] = dict(
     smooth_l1_beta= -1.,
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,
-    backbone_dtype="fp32",
+    bcs_range=(0.2, 0.4),
+    hue_range=(0.02, 0.08),
+    backbone_dtype="fp16",
     trainable_dtype="fp16",
     cv_seed=126015, # 1527
     save_output_dir="/notebooks/kaggle/csiro/output",
-    tfms=None,
     plot_imgs=False
 )
 

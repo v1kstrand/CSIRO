@@ -20,7 +20,8 @@ from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
-from .transforms import post_tfms, train_tfms_dict
+from .transforms import base_train_comp, post_tfms
+from .utils import build_color_jitter_sweep
 
 
 def cos_sin_lr(ep: int, epochs: int, lr_start: float, lr_final: float) -> float:
@@ -480,14 +481,17 @@ def run_groupkfold_cv(
     gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
     groups = wide_df[group_col].values
 
-    if tfms is None:
-        tfms_fn = train_tfms_dict["default"]
-    else:
-        assert isinstance(tfms, str)
-        tfms_fn = train_tfms_dict[tfms]
-        
+    if tfms is not None:
+        raise ValueError("tfms is deprecated; use bcs_range/hue_range sweep instead.")
 
-    ds_tr_view = TransformView(dataset, T.Compose([tfms_fn(), post_tfms()]))
+    bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
+    hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
+    jitter_tfms = build_color_jitter_sweep(
+        int(n_models),
+        bcs_range=tuple(bcs_range),
+        hue_range=tuple(hue_range),
+    )
+    train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
     ds_va_view = TransformView(dataset, post_tfms())
 
     comet_exp = None
@@ -521,6 +525,8 @@ def run_groupkfold_cv(
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             for model_idx in range(int(n_models)):
+                train_tfms = train_tfms_list[int(model_idx)]
+                ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
                 result = train_one_fold(
                     wide_df=wide_df,
                     ds_tr_view=ds_tr_view,
