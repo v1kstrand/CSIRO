@@ -13,6 +13,7 @@ import time
 from .amp import autocast_context
 from .config import (
     DEFAULTS,
+    DEFAULT_LOSS_WEIGHTS,
     DEFAULT_DATA_ROOT,
     DEFAULT_DINO_REPO_DIR,
     DEFAULT_MODEL_SIZE,
@@ -23,8 +24,10 @@ from .config import (
     parse_dtype,
 )
 from .data import BiomassBaseCached, TransformView, load_train_wide
+from .losses import WeightedMSELoss
 from .model import DINOv3Regressor
 from .transforms import base_train_comp, post_tfms, train_tfms
+from .amp import grad_scaler
 
 
 def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
@@ -188,6 +191,174 @@ def build_color_jitter_sweep(
             )
         )
     return tfms_list
+
+
+def _trainable_params_list(m: torch.nn.Module) -> list[torch.nn.Parameter]:
+    params: list[torch.nn.Parameter] = []
+    for name in ("neck", "head", "norm"):
+        part = getattr(m, name, None)
+        if part is None:
+            continue
+        for p in part.parameters():
+            if p.requires_grad:
+                params.append(p)
+    return params
+
+
+def health_check_throughput(
+    *,
+    dataset=None,
+    backbone=None,
+    n_batches: int = 20,
+    warmup: int = 2,
+    batch_size: int = 32,
+    num_workers: int | None = None,
+    device: str | torch.device = "cuda",
+    backbone_dtype: str | torch.dtype | None = None,
+    head_hidden: int | None = None,
+    head_depth: int | None = None,
+    head_drop: float | None = None,
+    num_neck: int | None = None,
+    lr: float | None = None,
+    wd: float | None = None,
+) -> dict[str, float]:
+    if dataset is None:
+        _, dataset = load_train_dataset_simple()
+
+    tfms = T.Compose([train_tfms(), post_tfms()])
+    sample = dataset[0]
+    if isinstance(sample, (tuple, list)):
+        img0 = sample[0] if sample else None
+        if isinstance(img0, Image.Image):
+            dataset = TransformView(dataset, tfms)
+    elif isinstance(sample, Image.Image):
+        dataset = TransformView(dataset, tfms)
+
+    num_workers = default_num_workers() if num_workers is None else int(num_workers)
+    dl = DataLoader(
+        dataset,
+        shuffle=True,
+        batch_size=int(batch_size),
+        pin_memory=str(device).startswith("cuda"),
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
+    )
+
+    if backbone_dtype is None:
+        backbone_dtype = DEFAULTS["backbone_dtype"]
+    if isinstance(backbone_dtype, str):
+        backbone_dtype = parse_dtype(backbone_dtype)
+
+    if backbone is None:
+        dino_repo = DEFAULT_DINO_REPO_DIR
+        model_size = DEFAULT_MODEL_SIZE
+        plus = DEFAULT_PLUS
+        dino_weights = DINO_WEIGHTS_PATH
+        if dino_repo is None:
+            raise ValueError("Set DEFAULT_DINO_REPO_DIR in config/env or pass backbone.")
+        if dino_weights is None:
+            raise ValueError("Set DINO_WEIGHTS_PATH in config/env or pass backbone.")
+        backbone = torch.hub.load(
+            str(dino_repo),
+            dino_hub_name(model_size=str(model_size), plus=str(plus)),
+            source="local",
+            weights=str(dino_weights),
+        )
+
+    model = DINOv3Regressor(
+        backbone,
+        hidden=int(DEFAULTS["head_hidden"] if head_hidden is None else head_hidden),
+        drop=float(DEFAULTS["head_drop"] if head_drop is None else head_drop),
+        depth=int(DEFAULTS["head_depth"] if head_depth is None else head_depth),
+        num_neck=int(DEFAULTS["num_neck"] if num_neck is None else num_neck),
+        backbone_dtype=backbone_dtype,
+    ).to(device)
+    model.init()
+    if hasattr(model, "set_train"):
+        model.set_train(True)
+    model.train()
+
+    trainable_params = _trainable_params_list(model)
+    lr = float(DEFAULTS["lr_start"] if lr is None else lr)
+    wd = float(DEFAULTS["wd"] if wd is None else wd)
+    opt = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
+    scaler = grad_scaler(device)
+    criterion = WeightedMSELoss(weights=torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)).to(device)
+
+    it = iter(dl)
+    for _ in range(int(warmup)):
+        try:
+            batch = next(it)
+        except StopIteration:
+            it = iter(dl)
+            batch = next(it)
+        if not isinstance(batch, (tuple, list)) or len(batch) < 2:
+            raise ValueError("Dataset must yield (x, y_log) for health_check_throughput.")
+        x, y_log = batch[0], batch[1]
+        x = x.to(device, non_blocking=True)
+        y_log = y_log.to(device, non_blocking=True)
+        opt.zero_grad(set_to_none=True)
+        with autocast_context(device):
+            p_log = model(x)
+            loss = criterion(p_log, y_log)
+        if scaler.is_enabled():
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+        else:
+            loss.backward()
+            opt.step()
+
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize(device)
+
+    times: list[float] = []
+    n_seen = 0
+    for _ in range(int(n_batches)):
+        try:
+            batch = next(it)
+        except StopIteration:
+            it = iter(dl)
+            batch = next(it)
+        if not isinstance(batch, (tuple, list)) or len(batch) < 2:
+            raise ValueError("Dataset must yield (x, y_log) for health_check_throughput.")
+        x, y_log = batch[0], batch[1]
+        t0 = time.perf_counter()
+        x = x.to(device, non_blocking=True)
+        y_log = y_log.to(device, non_blocking=True)
+        opt.zero_grad(set_to_none=True)
+        with autocast_context(device):
+            p_log = model(x)
+            loss = criterion(p_log, y_log)
+        if scaler.is_enabled():
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+        else:
+            loss.backward()
+            opt.step()
+        if str(device).startswith("cuda"):
+            torch.cuda.synchronize(device)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+        n_seen += int(x.size(0))
+
+    if not times:
+        return dict(samples_per_sec=0.0, mean_step_time=0.0, median_step_time=0.0, total_time=0.0)
+
+    t = torch.tensor(times, dtype=torch.float64)
+    mean_step = float(t.mean().item())
+    med_step = float(t.median().item())
+    total = float(t.sum().item())
+    sps = float(n_seen / max(total, 1e-12))
+    return dict(
+        samples_per_sec=sps,
+        mean_step_time=mean_step,
+        median_step_time=med_step,
+        total_time=total,
+        n_batches=int(n_batches),
+        batch_size=int(batch_size),
+    )
 
 
 def analyze_dataloader_perf(
