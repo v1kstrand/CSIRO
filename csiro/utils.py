@@ -24,7 +24,7 @@ from .config import (
 )
 from .data import BiomassBaseCached, TransformView, load_train_wide
 from .model import DINOv3Regressor
-from .transforms import base_train_comp, post_tfms
+from .transforms import base_train_comp, post_tfms, train_tfms
 
 
 def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
@@ -207,7 +207,7 @@ def analyze_dataloader_perf(
     if dataset is None:
         _, dataset = load_train_dataset_simple()
 
-    tfms = post_tfms()
+    tfms = T.Compose([train_tfms(), post_tfms()])
     sample = dataset[0]
     if isinstance(sample, (tuple, list)):
         img0 = sample[0] if sample else None
