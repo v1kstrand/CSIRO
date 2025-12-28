@@ -226,15 +226,22 @@ def health_check_throughput(
     if dataset is None:
         _, dataset = load_train_dataset_simple()
 
+    sample = dataset[0]
     if not no_transform:
         tfms = T.Compose([train_tfms(), post_tfms()])
-        sample = dataset[0]
         if isinstance(sample, (tuple, list)):
             img0 = sample[0] if sample else None
             if isinstance(img0, Image.Image):
                 dataset = TransformView(dataset, tfms)
         elif isinstance(sample, Image.Image):
             dataset = TransformView(dataset, tfms)
+    else:
+        if isinstance(sample, (tuple, list)):
+            img0 = sample[0] if sample else None
+            if isinstance(img0, Image.Image):
+                raise ValueError("no_transform=True requires a tensor dataset (got PIL images).")
+        elif isinstance(sample, Image.Image):
+            raise ValueError("no_transform=True requires a tensor dataset (got PIL images).")
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
     dl = DataLoader(
