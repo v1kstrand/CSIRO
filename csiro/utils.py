@@ -221,18 +221,20 @@ def health_check_throughput(
     num_neck: int | None = None,
     lr: float | None = None,
     wd: float | None = None,
+    no_transform: bool = False,
 ) -> dict[str, float]:
     if dataset is None:
         _, dataset = load_train_dataset_simple()
 
-    tfms = T.Compose([train_tfms(), post_tfms()])
-    sample = dataset[0]
-    if isinstance(sample, (tuple, list)):
-        img0 = sample[0] if sample else None
-        if isinstance(img0, Image.Image):
+    if not no_transform:
+        tfms = T.Compose([train_tfms(), post_tfms()])
+        sample = dataset[0]
+        if isinstance(sample, (tuple, list)):
+            img0 = sample[0] if sample else None
+            if isinstance(img0, Image.Image):
+                dataset = TransformView(dataset, tfms)
+        elif isinstance(sample, Image.Image):
             dataset = TransformView(dataset, tfms)
-    elif isinstance(sample, Image.Image):
-        dataset = TransformView(dataset, tfms)
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
     dl = DataLoader(
