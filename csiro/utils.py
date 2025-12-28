@@ -6,6 +6,8 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader, Subset
 from PIL import Image
+import matplotlib.pyplot as plt
+import torchvision.transforms as T
 
 from .amp import autocast_context
 from .config import (
@@ -21,7 +23,7 @@ from .config import (
 )
 from .data import BiomassBaseCached, TransformView, load_train_wide
 from .model import DINOv3Regressor
-from .transforms import post_tfms
+from .transforms import base_train_comp, post_tfms
 
 
 def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
@@ -114,6 +116,44 @@ def load_train_dataset_simple(
     return wide_df, dataset
 
 
+def preview_augments(
+    tfms_list: list[T.Compose],
+    *,
+    dataset=None,
+    k: int = 4,
+    seed: int = 0,
+    show_titles: bool = False,
+):
+    if not tfms_list:
+        raise ValueError("tfms_list must contain at least one transform.")
+    if dataset is None:
+        _, dataset = load_train_dataset_simple()
+
+    total = len(dataset)
+    g = torch.Generator().manual_seed(int(seed))
+    idxs = torch.randperm(int(total), generator=g)[: int(k)].tolist()
+
+    aug_tfms = [T.Compose([base_train_comp, t]) for t in tfms_list]
+    n_cols = len(aug_tfms)
+    fig, axes = plt.subplots(int(k), int(n_cols), figsize=(3.2 * n_cols, 3.2 * int(k)))
+    if int(k) == 1:
+        axes = [axes]
+    for r, idx in enumerate(idxs):
+        sample = dataset[int(idx)]
+        img = sample[0] if isinstance(sample, (tuple, list)) else sample
+        if not isinstance(img, Image.Image):
+            raise TypeError("Dataset must return PIL images for preview_augments.")
+        for c, tfm in enumerate(aug_tfms):
+            aug = tfm(img)
+            ax = axes[r][c] if int(k) > 1 else axes[c]
+            ax.imshow(aug)
+            ax.axis("off")
+            if show_titles:
+                ax.set_title(f"t{c+1}")
+    plt.tight_layout()
+    return fig
+
+
 @torch.no_grad()
 def analyze_ensemble_redundancy(
     ensemble_states: Any,
@@ -158,7 +198,7 @@ def analyze_ensemble_redundancy(
         )
 
     if dataset is None:
-        raise ValueError("Provide dataset or build one with load_train_dataset_simple(...).")
+        _, dataset = load_train_dataset_simple()
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
     tfms = post_tfms()
