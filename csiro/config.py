@@ -68,9 +68,6 @@ DEFAULTS: dict[str, Any] = dict(
     plot_imgs=False
 )
 
-# Sweep definitions with transform choice by name (avoids circular import)
-SWEEPS: list[dict[str, object]] = [dict()]
-
 def default_num_workers(reserve: int = 2) -> int:
     import os
 

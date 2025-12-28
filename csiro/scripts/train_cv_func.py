@@ -17,7 +17,6 @@ from csiro.config import (
     DEFAULT_MODEL_SIZE,
     DEFAULT_PLUS,
     DEFAULTS,
-    SWEEPS,
     DINO_WEIGHTS_PATH,
     dino_hub_name,
     dino_weights_path,
@@ -76,9 +75,10 @@ def train_cv(
             device=device,
         )
      )
-
+    
+    sweeps = sweeps or [base_kwargs]
     outputs: list[dict[str, Any]] = []
-    for sweep in sweeps or SWEEPS:
+    for sweep in sweeps:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
         kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-:")
