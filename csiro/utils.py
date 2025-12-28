@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+from typing import Any
+
+import torch
+from torch.utils.data import DataLoader, Subset
+
+from .amp import autocast_context
+from .config import DEFAULTS, default_num_workers, parse_dtype
+from .model import DINOv3Regressor
+from .transforms import post_tfms
+
+
+def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
+    if torch.is_tensor(x):
+        return x
+    if isinstance(x, (tuple, list)):
+        xs = [xi if torch.is_tensor(xi) else tfms(xi) for xi in x]
+        return torch.stack(xs, dim=0)
+    return tfms(x).unsqueeze(0)
+
+
+def _build_model_from_state(
+    backbone,
+    state: dict[str, Any],
+    device: str | torch.device,
+    backbone_dtype: torch.dtype | None = None,
+) -> DINOv3Regressor:
+    model = DINOv3Regressor(
+        backbone,
+        hidden=int(state["head_hidden"]),
+        drop=float(state["head_drop"]),
+        depth=int(state["head_depth"]),
+        num_neck=int(state["num_neck"]),
+        backbone_dtype=backbone_dtype,
+    ).to(device)
+    parts = state.get("parts")
+    if isinstance(parts, dict):
+        for name in ("neck", "head", "norm"):
+            part = getattr(model, name, None)
+            if part is not None and name in parts:
+                part.load_state_dict(parts[name], strict=True)
+    else:
+        model.load_state_dict(state, strict=False)
+    return model
+
+
+def _normalize_states(states: Any) -> list[list[dict[str, Any]]]:
+    if isinstance(states, (str, bytes)):
+        states = torch.load(states, map_location="cpu", weights_only=False)
+    if isinstance(states, dict) and "states" in states:
+        states = states["states"]
+    if not isinstance(states, list) or not states:
+        raise ValueError("states must be a non-empty list or a checkpoint dict with 'states'.")
+    if isinstance(states[0], dict):
+        return [states]
+    if isinstance(states[0], list):
+        return states
+    return [list(states)]
+
+
+def _pairwise_stats(preds: torch.Tensor) -> dict[str, float]:
+    m = int(preds.shape[0])
+    if m < 2:
+        return dict(mean_pairwise_corr=1.0, mean_pairwise_mae=0.0, mean_model_std=0.0)
+    flat = preds.reshape(m, -1).float()
+    flat = flat - flat.mean(dim=1, keepdim=True)
+    denom = flat.norm(dim=1, keepdim=True)
+    corr = (flat @ flat.t()) / (denom @ denom.t() + 1e-12)
+    off = corr[~torch.eye(m, dtype=torch.bool)]
+    mean_corr = float(off.mean().item()) if off.numel() else 1.0
+
+    mae_sum = 0.0
+    count = 0
+    for i in range(m):
+        for j in range(i + 1, m):
+            mae_sum += float((preds[i] - preds[j]).abs().mean().item())
+            count += 1
+    mean_mae = float(mae_sum / max(count, 1))
+
+    mean_std = float(preds.std(dim=0, unbiased=False).mean().item())
+    return dict(mean_pairwise_corr=mean_corr, mean_pairwise_mae=mean_mae, mean_model_std=mean_std)
+
+
+@torch.no_grad()
+def analyze_ensemble_redundancy(
+    ensemble_states: Any,
+    *,
+    backbone,
+    dataset,
+    n_samples: int = 64,
+    batch_size: int = 32,
+    num_workers: int | None = None,
+    device: str | torch.device = "cuda",
+    seed: int = 0,
+    backbone_dtype: str | torch.dtype | None = None,
+    tta_rot90: bool = False,
+    tta_agg: str = "mean",
+    return_preds: bool = False,
+) -> dict[str, Any]:
+    fold_states = _normalize_states(ensemble_states)
+
+    if backbone_dtype is None:
+        backbone_dtype = DEFAULTS["backbone_dtype"]
+    if isinstance(backbone_dtype, str):
+        backbone_dtype = parse_dtype(backbone_dtype)
+
+    num_workers = default_num_workers() if num_workers is None else int(num_workers)
+    tfms = post_tfms()
+    n_rots = 4 if tta_rot90 else 1
+
+    if isinstance(dataset, DataLoader):
+        dl = dataset
+        idxs = None
+    else:
+        total = len(dataset)
+        g = torch.Generator().manual_seed(int(seed))
+        if int(n_samples) >= int(total):
+            idxs = list(range(int(total)))
+        else:
+            idxs = torch.randperm(int(total), generator=g)[: int(n_samples)].tolist()
+        subset = Subset(dataset, idxs)
+        dl = DataLoader(
+            subset,
+            shuffle=False,
+            batch_size=int(batch_size),
+            pin_memory=str(device).startswith("cuda"),
+            num_workers=num_workers,
+            persistent_workers=(num_workers > 0),
+        )
+
+    fold_stats: list[dict[str, float]] = []
+    fold_preds: list[torch.Tensor] = []
+
+    with torch.inference_mode(), autocast_context(device):
+        for states in fold_states:
+            models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in states]
+            for m in models:
+                if hasattr(m, "set_train"):
+                    m.set_train(False)
+                m.eval()
+
+            preds_by_model: list[list[torch.Tensor]] = [[] for _ in models]
+            for batch in dl:
+                if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                    x = batch[0]
+                else:
+                    x = batch
+                x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
+
+                for mi, model in enumerate(models):
+                    preds_rots: list[torch.Tensor] = []
+                    for k in range(n_rots):
+                        x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
+                        p_log = model(x_rot).float()
+                        p = torch.expm1(p_log).clamp_min(0.0)
+                        preds_rots.append(p)
+                    preds_by_model[mi].append(torch.stack(preds_rots, dim=0).mean(dim=0).detach().cpu())
+
+            preds_models = [torch.cat(p, dim=0) for p in preds_by_model]
+            preds = torch.stack(preds_models, dim=0)
+            fold_stats.append(_pairwise_stats(preds))
+            if return_preds:
+                fold_preds.append(preds)
+
+    result = dict(fold_stats=fold_stats)
+    if return_preds:
+        result["fold_preds"] = fold_preds
+    if idxs is not None:
+        result["sample_indices"] = idxs
+    return result
