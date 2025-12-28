@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Subset
 
 from .amp import autocast_context
-from .config import DEFAULTS, default_num_workers, parse_dtype
+from .config import (
+    DEFAULTS,
+    DEFAULT_DATA_ROOT,
+    DEFAULT_DINO_REPO_DIR,
+    DEFAULT_MODEL_SIZE,
+    DEFAULT_PLUS,
+    DINO_WEIGHTS_PATH,
+    default_num_workers,
+    dino_hub_name,
+    parse_dtype,
+)
+from .data import BiomassBaseCached, load_train_wide
 from .model import DINOv3Regressor
 from .transforms import post_tfms
 
@@ -82,12 +94,33 @@ def _pairwise_stats(preds: torch.Tensor) -> dict[str, float]:
     return dict(mean_pairwise_corr=mean_corr, mean_pairwise_mae=mean_mae, mean_model_std=mean_std)
 
 
+def load_train_dataset_simple(
+    *,
+    csv: str | None = None,
+    root: str | None = None,
+    img_size: int | None = None,
+    cache_images: bool = True,
+):
+    if root is None:
+        root = DEFAULT_DATA_ROOT
+    if csv is None:
+        if root is None:
+            raise ValueError("Set root or csv to load the training dataset.")
+        csv = os.path.join(root, "train.csv")
+    if img_size is None:
+        img_size = int(DEFAULTS["img_size"])
+
+    wide_df = load_train_wide(str(csv), root=str(root) if root is not None else None)
+    dataset = BiomassBaseCached(wide_df, img_size=int(img_size), cache_images=bool(cache_images))
+    return wide_df, dataset
+
+
 @torch.no_grad()
 def analyze_ensemble_redundancy(
     ensemble_states: Any,
     *,
-    backbone,
-    dataset,
+    backbone=None,
+    dataset=None,
     n_samples: int = 64,
     batch_size: int = 32,
     num_workers: int | None = None,
@@ -97,6 +130,10 @@ def analyze_ensemble_redundancy(
     tta_rot90: bool = False,
     tta_agg: str = "mean",
     return_preds: bool = False,
+    dino_repo: str | None = None,
+    dino_weights: str | None = None,
+    model_size: str | None = None,
+    plus: str | None = None,
 ) -> dict[str, Any]:
     fold_states = _normalize_states(ensemble_states)
 
@@ -104,6 +141,25 @@ def analyze_ensemble_redundancy(
         backbone_dtype = DEFAULTS["backbone_dtype"]
     if isinstance(backbone_dtype, str):
         backbone_dtype = parse_dtype(backbone_dtype)
+
+    if backbone is None:
+        dino_repo = DEFAULT_DINO_REPO_DIR if dino_repo is None else dino_repo
+        model_size = DEFAULT_MODEL_SIZE if model_size is None else model_size
+        plus = DEFAULT_PLUS if plus is None else plus
+        dino_weights = DINO_WEIGHTS_PATH if dino_weights is None else dino_weights
+        if dino_repo is None:
+            raise ValueError("Set DEFAULT_DINO_REPO_DIR in config/env or pass dino_repo.")
+        if dino_weights is None:
+            raise ValueError("Set DINO_WEIGHTS_PATH in config/env or pass dino_weights.")
+        backbone = torch.hub.load(
+            str(dino_repo),
+            dino_hub_name(model_size=str(model_size), plus=str(plus)),
+            source="local",
+            weights=str(dino_weights),
+        )
+
+    if dataset is None:
+        raise ValueError("Provide dataset or build one with load_train_dataset_simple(...).")
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
     tfms = post_tfms()
