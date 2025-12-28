@@ -154,6 +154,41 @@ def preview_augments(
     return fig
 
 
+def build_color_jitter_sweep(
+    n: int,
+    *,
+    bcs_range: tuple[float, float],
+    hue_range: tuple[float, float],
+) -> list[T.Compose]:
+    n = int(n)
+    if n <= 0:
+        raise ValueError("n must be >= 1.")
+    b0, b1 = float(bcs_range[0]), float(bcs_range[1])
+    h0, h1 = float(hue_range[0]), float(hue_range[1])
+    if n == 1:
+        bcs_vals = [b0]
+        hue_vals = [h0]
+    else:
+        bcs_vals = torch.linspace(b0, b1, n).tolist()
+        hue_vals = torch.linspace(h0, h1, n).tolist()
+
+    tfms_list: list[T.Compose] = []
+    for bcs, hue in zip(bcs_vals, hue_vals):
+        tfms_list.append(
+            T.Compose(
+                [
+                    T.ColorJitter(
+                        brightness=float(bcs),
+                        contrast=float(bcs),
+                        saturation=float(bcs),
+                        hue=float(hue),
+                    )
+                ]
+            )
+        )
+    return tfms_list
+
+
 @torch.no_grad()
 def analyze_ensemble_redundancy(
     ensemble_states: Any,
