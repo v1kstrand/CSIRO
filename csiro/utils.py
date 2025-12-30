@@ -610,9 +610,9 @@ def analyze_ensemble_redundancy(
             preds_by_model: list[list[torch.Tensor]] = [[] for _ in models]
             for batch in dl:
                 if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                x = batch[0]
-            else:
-                x = batch
+                    x = batch[0]
+                else:
+                    x = batch
             x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
 
             for mi, model in enumerate(models):
