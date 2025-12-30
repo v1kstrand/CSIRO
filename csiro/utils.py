@@ -524,7 +524,6 @@ def analyze_ensemble_redundancy(
     device: str | torch.device = "cuda",
     seed: int = 0,
     backbone_dtype: str | torch.dtype | None = None,
-    tta_rot90: bool = False,
     tta_agg: str = "mean",
     return_preds: bool = False,
     dino_repo: str | None = None,
@@ -560,7 +559,6 @@ def analyze_ensemble_redundancy(
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
     tfms = post_tfms()
-    n_rots = 4 if tta_rot90 else 1
 
     if isinstance(dataset, DataLoader):
         dl = dataset
@@ -593,6 +591,14 @@ def analyze_ensemble_redundancy(
     fold_stats: list[dict[str, float]] = []
     fold_preds: list[torch.Tensor] = []
 
+    tta_agg = str(tta_agg).lower()
+    def _agg_tta_batch(p: torch.Tensor) -> torch.Tensor:
+        if tta_agg == "mean":
+            return p.mean(dim=1)
+        if tta_agg == "median":
+            return p.median(dim=1).values
+        raise ValueError(f"Unknown tta_agg: {tta_agg}")
+
     with torch.inference_mode(), autocast_context(device):
         for states in fold_states:
             models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in states]
@@ -604,19 +610,25 @@ def analyze_ensemble_redundancy(
             preds_by_model: list[list[torch.Tensor]] = [[] for _ in models]
             for batch in dl:
                 if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                    x = batch[0]
-                else:
-                    x = batch
-                x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
+                x = batch[0]
+            else:
+                x = batch
+            x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
 
-                for mi, model in enumerate(models):
-                    preds_rots: list[torch.Tensor] = []
-                    for k in range(n_rots):
-                        x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
-                        p_log = model(x_rot).float()
-                        p = torch.expm1(p_log).clamp_min(0.0)
-                        preds_rots.append(p)
-                    preds_by_model[mi].append(torch.stack(preds_rots, dim=0).mean(dim=0).detach().cpu())
+            for mi, model in enumerate(models):
+                if x.ndim == 5:
+                    b, t, c, h, w = x.shape
+                    x_flat = x.view(b * t, c, h, w)
+                    p_log = model(x_flat).float()
+                    p = torch.expm1(p_log).clamp_min(0.0)
+                    p = p.view(b, t, -1)
+                    preds_by_model[mi].append(_agg_tta_batch(p).detach().cpu())
+                elif x.ndim == 4:
+                    p_log = model(x).float()
+                    p = torch.expm1(p_log).clamp_min(0.0)
+                    preds_by_model[mi].append(p.detach().cpu())
+                else:
+                    raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
             preds_models = [torch.cat(p, dim=0) for p in preds_by_model]
             preds = torch.stack(preds_models, dim=0)

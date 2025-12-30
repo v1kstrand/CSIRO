@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from .amp import autocast_context
 from .config import DEFAULTS, default_num_workers, parse_dtype
 from .model import DINOv3Regressor
-from .transforms import post_tfms, TTABatch
+from .transforms import post_tfms
 
 
 def _is_state_dict(state: Any) -> bool:
@@ -184,13 +184,9 @@ def predict_ensemble(
     num_workers: int | None = None,
     device: str | torch.device = "cuda",
     backbone_dtype: str | torch.dtype | None = None,
-    tta_rot90: bool = True,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     seed_agg: str = "flatten",
-    tta_n: int | None = None,
-    tta_bcs_val: float = 0.0,
-    tta_hue_val: float = 0.0,
 ) -> torch.Tensor:
     seed_states = _extract_seed_states(states)
 
@@ -213,10 +209,6 @@ def predict_ensemble(
         backbone_dtype = parse_dtype(backbone_dtype)
 
     tfms = post_tfms()
-    n_rots = 4 if tta_rot90 else 1
-    if tta_n is None:
-        tta_n = int(n_rots)
-    tta_batch = TTABatch(tta_n=int(tta_n), bcs_val=float(tta_bcs_val), hue_val=float(tta_hue_val))
     seed_agg = str(seed_agg).lower()
 
     def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
@@ -243,12 +235,12 @@ def predict_ensemble(
                         p = torch.expm1(p_log).clamp_min(0.0)
                         p = p.view(x.size(0), int(t), -1)
                         preds_models.append(_agg_tta(p, tta_agg))
-                    else:
-                        x_tta = tta_batch(x, flatten=True)
-                        p_log = model(x_tta).float()
+                    elif x.ndim == 4:
+                        p_log = model(x).float()
                         p = torch.expm1(p_log).clamp_min(0.0)
-                        p = p.view(x.size(0), int(tta_n), -1)
-                        preds_models.append(_agg_tta(p, tta_agg))
+                        preds_models.append(p)
+                    else:
+                        raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
                 p_ens = _agg_stack(preds_models, ens_agg)
                 preds.append(p_ens.detach().cpu())
@@ -279,13 +271,9 @@ def predict_ensemble_from_pt(
     num_workers: int | None = None,
     device: str | torch.device = "cuda",
     backbone_dtype: str | torch.dtype | None = None,
-    tta_rot90: bool = True,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     seed_agg: str = "flatten",
-    tta_n: int | None = None,
-    tta_bcs_val: float = 0.0,
-    tta_hue_val: float = 0.0,
 ) -> torch.Tensor:
     states = load_states_from_pt(pt_path)
     return predict_ensemble(
@@ -296,11 +284,7 @@ def predict_ensemble_from_pt(
         num_workers=num_workers,
         device=device,
         backbone_dtype=backbone_dtype,
-        tta_rot90=tta_rot90,
         tta_agg=tta_agg,
         ens_agg=ens_agg,
         seed_agg=seed_agg,
-        tta_n=tta_n,
-        tta_bcs_val=tta_bcs_val,
-        tta_hue_val=tta_hue_val,
     )

@@ -20,7 +20,7 @@ from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
-from .transforms import base_train_comp, post_tfms, TTABatch
+from .transforms import base_train_comp, post_tfms
 from .utils import build_color_jitter_sweep
 
 
@@ -440,10 +440,6 @@ def eval_global_wr2_ensemble(
     w_vec: torch.Tensor,
     *,
     device: str | torch.device = "cuda",
-    tta_rot90: bool = True,
-    tta_n: int | None = None,
-    tta_bcs_val: float = 0.0,
-    tta_hue_val: float = 0.0,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     comet_exp: Any | None = None,
@@ -461,10 +457,6 @@ def eval_global_wr2_ensemble(
     sum_wy = torch.zeros((), device=device)
     sum_wy2 = torch.zeros((), device=device)
 
-    n_rots = 4 if tta_rot90 else 1
-    if tta_n is None:
-        tta_n = int(n_rots)
-    tta_batch = TTABatch(tta_n=int(tta_n), bcs_val=float(tta_bcs_val), hue_val=float(tta_hue_val))
     with torch.inference_mode(), autocast_context(device):
         for batch in dl_va:
             if isinstance(batch, (tuple, list)) and len(batch) >= 2:
@@ -483,12 +475,12 @@ def eval_global_wr2_ensemble(
                     p = torch.expm1(p_log).clamp_min(0.0)
                     p = p.view(x.size(0), int(t), -1)
                     preds_models.append(_agg_tta(p, tta_agg))
-                else:
-                    x_tta = tta_batch(x, flatten=True)
-                    p_log = model(x_tta).float()
+                elif x.ndim == 4:
+                    p_log = model(x).float()
                     p = torch.expm1(p_log).clamp_min(0.0)
-                    p = p.view(x.size(0), int(tta_n), -1)
-                    preds_models.append(_agg_tta(p, tta_agg))
+                    preds_models.append(p)
+                else:
+                    raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
             p_ens = _agg_stack(preds_models, ens_agg)
 
