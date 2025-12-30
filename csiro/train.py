@@ -682,7 +682,8 @@ def run_groupkfold_cv_across_seeds(
         save_output_path = os.path.join(save_output_dir, base + ".pt")
         if not os.path.exists(save_output_path):
             torch.save({}, save_output_path)
-
+    
+    print(seeds)
     for seed in seeds:
         result = run_groupkfold_cv(
             cv_seed=int(seed),

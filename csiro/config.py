@@ -64,7 +64,7 @@ DEFAULTS: dict[str, Any] = dict(
     backbone_dtype="fp16",
     trainable_dtype="fp16",
     seed_eval_mode="all_folds",
-    cv_seed=[126015], # 1527
+    cv_seed=(126015,), # 1527
     save_output_dir="/notebooks/kaggle/csiro/output",
     plot_imgs=False
 )
