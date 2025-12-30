@@ -683,7 +683,7 @@ def run_groupkfold_cv_across_seeds(
         if not os.path.exists(save_output_path):
             torch.save({}, save_output_path)
     
-    print(seeds)
+    print(seeds, save_output_path)
     for seed in seeds:
         result = run_groupkfold_cv(
             cv_seed=int(seed),
@@ -694,14 +694,7 @@ def run_groupkfold_cv_across_seeds(
         )
         outputs[str(seed)] = result
         if save_output_path is not None:
-            try:
-                existing = torch.load(save_output_path, map_location="cpu")
-            except Exception:
-                existing = {}
-            if not isinstance(existing, dict):
-                existing = {}
-            existing[str(seed)] = result
-            torch.save(existing, save_output_path)
+            torch.save(outputs, save_output_path)
 
     mode = str(seed_eval_mode).lower()
     all_fold_scores: list[float] = []
