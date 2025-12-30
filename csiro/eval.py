@@ -68,6 +68,13 @@ def _agg_tta(p: torch.Tensor, agg: str) -> torch.Tensor:
     raise ValueError(f"Unknown aggregation: {agg}")
 
 
+def _split_tta_batch(x: torch.Tensor) -> tuple[torch.Tensor, int]:
+    if x.ndim != 5:
+        raise ValueError(f"Expected batched TTA [B,T,C,H,W], got {tuple(x.shape)}")
+    b, t, c, h, w = x.shape
+    return x.view(b * t, c, h, w), int(t)
+
+
 def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
     if torch.is_tensor(x):
         return x
@@ -230,11 +237,18 @@ def predict_ensemble(
 
                 preds_models: list[torch.Tensor] = []
                 for model in models:
-                    x_tta = tta_batch(x, flatten=True)
-                    p_log = model(x_tta).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
-                    p = p.view(x.size(0), int(tta_n), -1)
-                    preds_models.append(_agg_tta(p, tta_agg))
+                    if x.ndim == 5:
+                        x_tta, t = _split_tta_batch(x)
+                        p_log = model(x_tta).float()
+                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p = p.view(x.size(0), int(t), -1)
+                        preds_models.append(_agg_tta(p, tta_agg))
+                    else:
+                        x_tta = tta_batch(x, flatten=True)
+                        p_log = model(x_tta).float()
+                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p = p.view(x.size(0), int(tta_n), -1)
+                        preds_models.append(_agg_tta(p, tta_agg))
 
                 p_ens = _agg_stack(preds_models, ens_agg)
                 preds.append(p_ens.detach().cpu())

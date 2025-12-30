@@ -13,6 +13,7 @@ import torchvision.transforms as T
 
 
 from .config import IDX_COLS, TARGETS
+from .transforms import TTABatch, post_tfms
 
 
 def _to_abs_path(root: str | None, p: str) -> str:
@@ -104,3 +105,37 @@ class TransformView(Dataset):
         img, y = self.base[i]
         x = self.tfms(img)
         return x, y
+
+
+class TTADataset(Dataset):
+    def __init__(
+        self,
+        base: Dataset,
+        *,
+        tta_n: int = 4,
+        bcs_val: float = 0.0,
+        hue_val: float = 0.0,
+        apply_post_tfms: bool = True,
+    ):
+        self.base = base
+        self.apply_post_tfms = bool(apply_post_tfms)
+        self.post = post_tfms() if self.apply_post_tfms else None
+        self.tta = TTABatch(tta_n=int(tta_n), bcs_val=float(bcs_val), hue_val=float(hue_val))
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i: int):
+        item = self.base[i]
+        if isinstance(item, (tuple, list)):
+            img, y = item[0], item[1]
+        else:
+            img, y = item, None
+
+        if self.post is not None and not torch.is_tensor(img):
+            img = self.post(img)
+
+        x_tta = self.tta(img, flatten=False)
+        if y is None:
+            return x_tta
+        return x_tta, y
