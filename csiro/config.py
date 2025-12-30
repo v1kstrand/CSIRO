@@ -63,7 +63,8 @@ DEFAULTS: dict[str, Any] = dict(
     hue_range=(0.02, 0.08),
     backbone_dtype="fp16",
     trainable_dtype="fp16",
-    cv_seed=126015, # 1527
+    seed_eval_mode="all_folds",
+    cv_seed=[126015], # 1527
     save_output_dir="/notebooks/kaggle/csiro/output",
     plot_imgs=False
 )

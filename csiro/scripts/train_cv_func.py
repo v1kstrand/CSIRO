@@ -23,7 +23,7 @@ from csiro.config import (
     parse_dtype,
 )
 from csiro.data import BiomassBaseCached, load_train_wide
-from csiro.train import run_groupkfold_cv
+from csiro.train import run_groupkfold_cv, run_groupkfold_cv_across_seeds
 
 def train_cv(
     *,
@@ -83,15 +83,20 @@ def train_cv(
         kwargs.update({k: v for k, v in sweep.items()})
         kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-:")[:40]
 
-        result = run_groupkfold_cv(return_details=True, **kwargs)
+        cv_seeds = kwargs.pop("cv_seed", None)
+        if cv_seeds is None:
+            cv_seeds = DEFAULTS["cv_seed"]
+        if not isinstance(cv_seeds, (list, tuple, set)):
+            cv_seeds = [cv_seeds]
+        result = run_groupkfold_cv_across_seeds(
+            cv_seeds=list(cv_seeds),
+            **kwargs,
+        )
         outputs.append(
             dict(
                 config_name=kwargs["config_name"],
-                fold_model_scores=result["fold_model_scores"],
-                fold_scores=result["fold_scores"],
-                mean=result["mean"],
-                std=result["std"],
-                states=result["states"],
+                seed_results=result["seed_results"],
+                summary=result["summary"],
             )
         )
 

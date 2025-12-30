@@ -67,8 +67,24 @@ def _build_model_from_state(
 def _normalize_states(states: Any) -> list[list[dict[str, Any]]]:
     if isinstance(states, (str, bytes)):
         states = torch.load(states, map_location="cpu", weights_only=False)
+    if isinstance(states, dict) and "seed_results" in states:
+        states = states["seed_results"]
     if isinstance(states, dict) and "states" in states:
         states = states["states"]
+    if isinstance(states, dict):
+        fold_lists: list[list[dict[str, Any]]] = []
+        for _, v in sorted(states.items(), key=lambda kv: str(kv[0])):
+            if isinstance(v, dict) and "states" in v:
+                v = v["states"]
+            if isinstance(v, list) and v and isinstance(v[0], list):
+                fold_lists.extend(v)
+            elif isinstance(v, list):
+                fold_lists.append(v)
+            else:
+                fold_lists.append([v])
+        if not fold_lists:
+            raise ValueError("states must be a non-empty list or a checkpoint dict with 'states'.")
+        return fold_lists
     if not isinstance(states, list) or not states:
         raise ValueError("states must be a non-empty list or a checkpoint dict with 'states'.")
     if isinstance(states[0], dict):

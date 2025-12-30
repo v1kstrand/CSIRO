@@ -120,6 +120,18 @@ def _set_swa_lr(swa_lr_start, swa_lr_final, lr_final):
     return swa_lr_start, swa_lr_final
 
 
+def _normalize_cv_seeds(cv_seed) -> list[int]:
+    if cv_seed is None:
+        cv_seed = DEFAULTS["cv_seed"]
+    if isinstance(cv_seed, (list, tuple, set)):
+        seeds = [int(s) for s in cv_seed]
+    else:
+        seeds = [int(cv_seed)]
+    if not seeds:
+        raise ValueError("cv_seed must contain at least one seed.")
+    return seeds
+
+
 def train_one_fold(
     *,
     ds_tr_view,
@@ -148,6 +160,7 @@ def train_one_fold(
     comet_exp: Any | None = None,
     skip_log_first_n: int = 5,
     curr_fold: int = 0,
+    cv_seed: int | None = None,
     swa_epochs: int = 15,
     swa_lr_start: float | None = None,
     swa_lr_final: float | None = None,
@@ -260,7 +273,11 @@ def train_one_fold(
         score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
-            p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss), f"x_val_wR2_cv{curr_fold}_m{model_idx}": float(score)}
+            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
+            p = {
+                f"x_train_loss_cv{curr_fold}_m{model_idx}{seed_tag}": float(train_loss),
+                f"x_val_wR2_cv{curr_fold}_m{model_idx}{seed_tag}": float(score),
+            }
             comet_exp.log_metrics(p, step=int(ep))
 
         if score > best_score:
@@ -356,7 +373,11 @@ def train_one_fold(
         swa_model.update_parameters(model)
 
         if comet_exp is not None:
-            comet_exp.log_metrics({f"x_swa_train_loss_cv{curr_fold}_m{model_idx}": float(swa_loss)}, step=int(k))
+            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
+            comet_exp.log_metrics(
+                {f"x_swa_train_loss_cv{curr_fold}_m{model_idx}{seed_tag}": float(swa_loss)},
+                step=int(k),
+            )
             
         s2 = f"[fold {fold_idx} | model {int(model_idx)}] | swa_loss={swa_loss:.4f}"
         if verbose:
@@ -364,7 +385,11 @@ def train_one_fold(
         if int(swa_eval_freq) > 0 and (int(k) % int(swa_eval_freq) == 0):
             swa_score = float(eval_global_wr2(swa_model, dl_va, eval_w, device=device))
             if comet_exp is not None:
-                comet_exp.log_metrics({f"swa_wR2_cv{curr_fold}_m{model_idx}": float(swa_score)}, step=int(k))
+                seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
+                comet_exp.log_metrics(
+                    {f"swa_wR2_cv{curr_fold}_m{model_idx}{seed_tag}": float(swa_score)},
+                    step=int(k),
+                )
                 p_bar.set_postfix_str(s2 + f" | swa_wR2={swa_score:.4f}")
         else:
             p_bar.set_postfix_str(s2)
@@ -404,6 +429,7 @@ def eval_global_wr2_ensemble(
     ens_agg: str = "mean",
     comet_exp: Any | None = None,
     curr_fold: int | None = None,
+    cv_seed: int | None = None,
 ) -> float:
     for model in models:
         if hasattr(model, "set_train"):
@@ -453,7 +479,8 @@ def eval_global_wr2_ensemble(
     score = (1.0 - ss_res / (ss_tot + 1e-12)).item()
     if comet_exp is not None:
         try:
-            comet_exp.log_metrics({str(f"1ENS_wR2_cv{curr_fold}"): float(score)})
+            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
+            comet_exp.log_metrics({str(f"1ENS_wR2_cv{curr_fold}{seed_tag}"): float(score)})
         except Exception:
             pass
     return float(score)
@@ -465,7 +492,7 @@ def run_groupkfold_cv(
     wide_df,
     n_splits: int = 5,
     group_col: str = "Sampling_Date",
-    cv_seed: int | None = None,
+    cv_seed: int | list[int] | None = None,
     backbone_dtype: str | torch.dtype | None = None,
     tfms: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
@@ -476,8 +503,10 @@ def run_groupkfold_cv(
     save_output_dir: str | None = None,
     **train_kwargs,
 ):
-    if cv_seed is None:
-        cv_seed = int(DEFAULTS["cv_seed"])
+    seeds = _normalize_cv_seeds(cv_seed)
+    if len(seeds) != 1:
+        raise ValueError("cv_seed must be a single seed for run_groupkfold_cv.")
+    cv_seed = int(seeds[0])
     gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
     groups = wide_df[group_col].values
 
@@ -536,6 +565,7 @@ def run_groupkfold_cv(
                     fold_idx=int(fold_idx),
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
+                    cv_seed=int(cv_seed),
                     model_idx=int(model_idx),
                     backbone_dtype=backbone_dtype,
                     return_state=True,
@@ -594,6 +624,7 @@ def run_groupkfold_cv(
                 device=train_kwargs["device"],
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
+                cv_seed=int(cv_seed),
                 
             )
             fold_scores.append(float(fold_score))
@@ -602,8 +633,9 @@ def run_groupkfold_cv(
     finally:
         if comet_exp is not None:
             fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
-            comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
-            comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
+            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
+            comet_exp.log_metric(f"0cv_mean{seed_tag}", fold_scores_np.mean())
+            comet_exp.log_metric(f"0cv_std{seed_tag}", fold_scores_np.std(ddof=0))
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
@@ -629,3 +661,73 @@ def run_groupkfold_cv(
             "std": float(scores.std(ddof=0)),
             "states": fold_states,
         }
+
+
+def run_groupkfold_cv_across_seeds(
+    *,
+    cv_seeds: list[int] | tuple[int, ...] | None = None,
+    save_output_dir: str | None = None,
+    config_name: str = "",
+    seed_eval_mode: str = "all_folds",
+    **kwargs,
+) -> dict[str, Any]:
+    seeds = _normalize_cv_seeds(cv_seeds)
+    outputs: dict[str, Any] = {}
+    save_output_path = None
+
+    if save_output_dir is not None:
+        os.makedirs(save_output_dir, exist_ok=True)
+        uid = "_" + str(uuid.uuid4())[:3]
+        base = f"{config_name}{uid}" if config_name else f"cv_seeds{uid}"
+        save_output_path = os.path.join(save_output_dir, base + ".pt")
+        if not os.path.exists(save_output_path):
+            torch.save({}, save_output_path)
+
+    for seed in seeds:
+        result = run_groupkfold_cv(
+            cv_seed=int(seed),
+            save_output_dir=None,
+            return_details=True,
+            config_name=config_name,
+            **kwargs,
+        )
+        outputs[str(seed)] = result
+        if save_output_path is not None:
+            try:
+                existing = torch.load(save_output_path, map_location="cpu")
+            except Exception:
+                existing = {}
+            if not isinstance(existing, dict):
+                existing = {}
+            existing[str(seed)] = result
+            torch.save(existing, save_output_path)
+
+    mode = str(seed_eval_mode).lower()
+    all_fold_scores: list[float] = []
+    seed_means: list[float] = []
+    for res in outputs.values():
+        fs = np.asarray(res["fold_scores"], dtype=np.float32).tolist()
+        all_fold_scores.extend(fs)
+        seed_means.append(float(np.mean(fs)))
+
+    summary: dict[str, Any] = dict(seed_eval_mode=mode)
+    if mode == "per_seed_mean":
+        seed_means_np = np.asarray(seed_means, dtype=np.float32)
+        summary.update(
+            dict(
+                mean=float(seed_means_np.mean()) if seed_means_np.size else float("nan"),
+                std=float(seed_means_np.std(ddof=0)) if seed_means_np.size else float("nan"),
+            )
+        )
+    elif mode == "all_folds":
+        all_scores_np = np.asarray(all_fold_scores, dtype=np.float32)
+        summary.update(
+            dict(
+                mean=float(all_scores_np.mean()) if all_scores_np.size else float("nan"),
+                std=float(all_scores_np.std(ddof=0)) if all_scores_np.size else float("nan"),
+            )
+        )
+    else:
+        raise ValueError(f"Unknown seed_eval_mode: {seed_eval_mode}")
+
+    return dict(seed_results=outputs, summary=summary)

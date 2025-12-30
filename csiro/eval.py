@@ -11,12 +11,40 @@ from .model import DINOv3Regressor
 from .transforms import post_tfms
 
 
+def _is_state_dict(state: Any) -> bool:
+    if not isinstance(state, dict):
+        return False
+    keys = state.keys()
+    return any(k in keys for k in ("head_hidden", "head_depth", "head_drop", "num_neck", "parts"))
+
+
 def _flatten_states(states: Any) -> list[dict[str, Any]]:
+    if _is_state_dict(states):
+        return [states]
+    if isinstance(states, dict) and "states" in states:
+        states = states["states"]
     if isinstance(states, dict):
-        states = [states]
+        states = list(states.values())
     if states and isinstance(states[0], list):
         states = [s for fold in states for s in fold]
     return list(states)
+
+
+def _extract_seed_states(states: Any) -> dict[str, list[dict[str, Any]]]:
+    if _is_state_dict(states):
+        return {"0": [states]}
+    if isinstance(states, dict) and "seed_results" in states:
+        states = states["seed_results"]
+    if isinstance(states, dict) and "states" in states:
+        return {"0": _flatten_states(states["states"])}
+    if isinstance(states, dict):
+        seed_map: dict[str, list[dict[str, Any]]] = {}
+        for k, v in states.items():
+            if isinstance(v, dict) and "states" in v:
+                v = v["states"]
+            seed_map[str(k)] = _flatten_states(v)
+        return seed_map
+    return {"0": _flatten_states(states)}
 
 
 def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
@@ -65,10 +93,9 @@ def _build_model_from_state(
     return model
 
 
-def load_states_from_pt(pt_path: str) -> list[dict[str, Any]]:
+def load_states_from_pt(pt_path: str) -> Any:
     ckpt = torch.load(pt_path, map_location="cpu", weights_only=False)
-    states = ckpt["states"] if isinstance(ckpt, dict) and "states" in ckpt else ckpt
-    return _flatten_states(states)
+    return ckpt["states"] if isinstance(ckpt, dict) and "states" in ckpt else ckpt
 
 
 def _require(state: dict[str, Any], key: str) -> Any:
@@ -84,10 +111,18 @@ def load_dinov3_regressor_from_pt(
     device: str | torch.device = "cuda",
     backbone_dtype: str | torch.dtype | None = None,
     state_idx: int = 0,
+    seed: str | int | None = None,
 ) -> DINOv3Regressor:
-    states = load_states_from_pt(pt_path)
-    if not states:
+    states_raw = load_states_from_pt(pt_path)
+    seed_states = _extract_seed_states(states_raw)
+    if not seed_states:
         raise ValueError("No states found in checkpoint.")
+    if seed is None:
+        seed = sorted(seed_states.keys())[0]
+    seed_key = str(seed)
+    if seed_key not in seed_states:
+        raise KeyError(f"Seed '{seed}' not found in checkpoint.")
+    states = seed_states[seed_key]
     if int(state_idx) >= len(states):
         raise IndexError(f"state_idx {state_idx} out of range for {len(states)} states.")
 
@@ -172,7 +207,7 @@ def forward_trainable_random(
 @torch.no_grad()
 def predict_ensemble(
     data,
-    states: list[dict[str, Any]],
+    states: Any,
     backbone,
     *,
     batch_size: int = 128,
@@ -182,8 +217,9 @@ def predict_ensemble(
     tta_rot90: bool = True,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
+    seed_agg: str = "flatten",
 ) -> torch.Tensor:
-    states = _flatten_states(states)
+    seed_states = _extract_seed_states(states)
 
     if isinstance(data, DataLoader):
         dl = data
@@ -202,38 +238,55 @@ def predict_ensemble(
         backbone_dtype = DEFAULTS["backbone_dtype"]
     if isinstance(backbone_dtype, str):
         backbone_dtype = parse_dtype(backbone_dtype)
-    models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in states]
-    for model in models:
-        if hasattr(model, "set_train"):
-            model.set_train(False)
-        model.eval()
 
     tfms = post_tfms()
     n_rots = 4 if tta_rot90 else 1
-    preds: list[torch.Tensor] = []
-    with torch.inference_mode(), autocast_context(device):
-        for batch in dl:
-            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                x = batch[0]
-            else:
-                x = batch
+    seed_agg = str(seed_agg).lower()
 
-            x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
+    def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
+        for model in models:
+            if hasattr(model, "set_train"):
+                model.set_train(False)
+            model.eval()
 
-            preds_models: list[torch.Tensor] = []
-            for model in models:
-                preds_rots: list[torch.Tensor] = []
-                for k in range(n_rots):
-                    x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
-                    p_log = model(x_rot).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
-                    preds_rots.append(p)
-                preds_models.append(_agg_stack(preds_rots, tta_agg))
+        preds: list[torch.Tensor] = []
+        with torch.inference_mode(), autocast_context(device):
+            for batch in dl:
+                if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                    x = batch[0]
+                else:
+                    x = batch
 
-            p_ens = _agg_stack(preds_models, ens_agg)
-            preds.append(p_ens.detach().cpu())
+                x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
 
-    return torch.cat(preds, dim=0)
+                preds_models: list[torch.Tensor] = []
+                for model in models:
+                    preds_rots: list[torch.Tensor] = []
+                    for k in range(n_rots):
+                        x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
+                        p_log = model(x_rot).float()
+                        p = torch.expm1(p_log).clamp_min(0.0)
+                        preds_rots.append(p)
+                    preds_models.append(_agg_stack(preds_rots, tta_agg))
+
+                p_ens = _agg_stack(preds_models, ens_agg)
+                preds.append(p_ens.detach().cpu())
+
+        return torch.cat(preds, dim=0)
+
+    if seed_agg == "flatten":
+        flat_states = [s for ss in seed_states.values() for s in ss]
+        models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
+        return _predict_with_models(models)
+    if seed_agg in ("mean", "median"):
+        preds_seeds: list[torch.Tensor] = []
+        for seed_key in sorted(seed_states.keys()):
+            models = [
+                _build_model_from_state(backbone, s, device, backbone_dtype) for s in seed_states[seed_key]
+            ]
+            preds_seeds.append(_predict_with_models(models))
+        return _agg_stack(preds_seeds, seed_agg)
+    raise ValueError(f"Unknown seed_agg: {seed_agg}")
 
 
 def predict_ensemble_from_pt(
@@ -248,6 +301,7 @@ def predict_ensemble_from_pt(
     tta_rot90: bool = True,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
+    seed_agg: str = "flatten",
 ) -> torch.Tensor:
     states = load_states_from_pt(pt_path)
     return predict_ensemble(
@@ -261,4 +315,5 @@ def predict_ensemble_from_pt(
         tta_rot90=tta_rot90,
         tta_agg=tta_agg,
         ens_agg=ens_agg,
+        seed_agg=seed_agg,
     )
