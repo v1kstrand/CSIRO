@@ -136,6 +136,8 @@ class TTADataset(Dataset):
             img = self.post(img)
 
         x_tta = self.tta(img, flatten=False)
+        if x_tta.ndim == 5 and x_tta.size(0) == 1:
+            x_tta = x_tta.squeeze(0)
         if y is None:
             return x_tta
         return x_tta, y
