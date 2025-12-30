@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from .amp import autocast_context
 from .config import DEFAULTS, default_num_workers, parse_dtype
 from .model import DINOv3Regressor
-from .transforms import post_tfms
+from .transforms import post_tfms, TTABatch
 
 
 def _is_state_dict(state: Any) -> bool:
@@ -56,6 +56,15 @@ def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
         return stacked.mean(dim=0)
     if agg == "median":
         return stacked.median(dim=0).values
+    raise ValueError(f"Unknown aggregation: {agg}")
+
+
+def _agg_tta(p: torch.Tensor, agg: str) -> torch.Tensor:
+    agg = str(agg).lower()
+    if agg == "mean":
+        return p.mean(dim=1)
+    if agg == "median":
+        return p.median(dim=1).values
     raise ValueError(f"Unknown aggregation: {agg}")
 
 
@@ -156,52 +165,6 @@ def load_dinov3_regressor_from_pt(
     return model
 
 
-@torch.no_grad()
-def forward_trainable_random(
-    model: DINOv3Regressor,
-    seed: int,
-    *,
-    batch_size: int = 1,
-    tokens_len: int = 197,
-    device: str | torch.device = "cuda",
-    dtype: torch.dtype | None = None,
-    head_only: bool = False,
-) -> list[torch.Tensor]:
-    if hasattr(model, "set_train"):
-        model.set_train(False)
-    model.eval()
-    model = model.to(device)
-
-    if dtype is None:
-        try:
-            dtype = next(model.parameters()).dtype
-        except StopIteration:
-            dtype = torch.float32
-
-    feat_dim = int(model.feat_dim)
-    g = torch.Generator()
-    g.manual_seed(int(seed))
-    x = torch.rand(
-        int(batch_size),
-        int(tokens_len),
-        feat_dim,
-        generator=g,
-        dtype=dtype,
-    )
-    x = x.to(device)
-    
-    tokens = x
-    if not head_only:
-        for block in model.neck:
-            try:
-                tokens = block(tokens, None)
-            except TypeError:
-                tokens = block(tokens)
-    cls = tokens[:, 0, :]
-    cls = model.norm(cls)
-    y = model.head(cls)
-
-    return [y]
 
 
 @torch.no_grad()
@@ -218,6 +181,9 @@ def predict_ensemble(
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     seed_agg: str = "flatten",
+    tta_n: int | None = None,
+    tta_bcs_val: float = 0.0,
+    tta_hue_val: float = 0.0,
 ) -> torch.Tensor:
     seed_states = _extract_seed_states(states)
 
@@ -241,6 +207,9 @@ def predict_ensemble(
 
     tfms = post_tfms()
     n_rots = 4 if tta_rot90 else 1
+    if tta_n is None:
+        tta_n = int(n_rots)
+    tta_batch = TTABatch(tta_n=int(tta_n), bcs_val=float(tta_bcs_val), hue_val=float(tta_hue_val))
     seed_agg = str(seed_agg).lower()
 
     def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
@@ -261,13 +230,11 @@ def predict_ensemble(
 
                 preds_models: list[torch.Tensor] = []
                 for model in models:
-                    preds_rots: list[torch.Tensor] = []
-                    for k in range(n_rots):
-                        x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
-                        p_log = model(x_rot).float()
-                        p = torch.expm1(p_log).clamp_min(0.0)
-                        preds_rots.append(p)
-                    preds_models.append(_agg_stack(preds_rots, tta_agg))
+                    x_tta = tta_batch(x, flatten=True)
+                    p_log = model(x_tta).float()
+                    p = torch.expm1(p_log).clamp_min(0.0)
+                    p = p.view(x.size(0), int(tta_n), -1)
+                    preds_models.append(_agg_tta(p, tta_agg))
 
                 p_ens = _agg_stack(preds_models, ens_agg)
                 preds.append(p_ens.detach().cpu())
@@ -302,6 +269,9 @@ def predict_ensemble_from_pt(
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     seed_agg: str = "flatten",
+    tta_n: int | None = None,
+    tta_bcs_val: float = 0.0,
+    tta_hue_val: float = 0.0,
 ) -> torch.Tensor:
     states = load_states_from_pt(pt_path)
     return predict_ensemble(
@@ -316,4 +286,7 @@ def predict_ensemble_from_pt(
         tta_agg=tta_agg,
         ens_agg=ens_agg,
         seed_agg=seed_agg,
+        tta_n=tta_n,
+        tta_bcs_val=tta_bcs_val,
+        tta_hue_val=tta_hue_val,
     )

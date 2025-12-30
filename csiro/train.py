@@ -20,7 +20,7 @@ from .data import TransformView
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
-from .transforms import base_train_comp, post_tfms
+from .transforms import base_train_comp, post_tfms, TTABatch
 from .utils import build_color_jitter_sweep
 
 
@@ -79,6 +79,15 @@ def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
         return stacked.mean(dim=0)
     if agg == "median":
         return stacked.median(dim=0).values
+    raise ValueError(f"Unknown aggregation: {agg}")
+
+
+def _agg_tta(p: torch.Tensor, agg: str) -> torch.Tensor:
+    agg = str(agg).lower()
+    if agg == "mean":
+        return p.mean(dim=1)
+    if agg == "median":
+        return p.median(dim=1).values
     raise ValueError(f"Unknown aggregation: {agg}")
 
 
@@ -424,7 +433,10 @@ def eval_global_wr2_ensemble(
     w_vec: torch.Tensor,
     *,
     device: str | torch.device = "cuda",
-    tta_rot90: bool = False,
+    tta_rot90: bool = True,
+    tta_n: int | None = None,
+    tta_bcs_val: float = 0.0,
+    tta_hue_val: float = 0.0,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     comet_exp: Any | None = None,
@@ -443,6 +455,9 @@ def eval_global_wr2_ensemble(
     sum_wy2 = torch.zeros((), device=device)
 
     n_rots = 4 if tta_rot90 else 1
+    if tta_n is None:
+        tta_n = int(n_rots)
+    tta_batch = TTABatch(tta_n=int(tta_n), bcs_val=float(tta_bcs_val), hue_val=float(tta_hue_val))
     with torch.inference_mode(), autocast_context(device):
         for batch in dl_va:
             if isinstance(batch, (tuple, list)) and len(batch) >= 2:
@@ -455,13 +470,11 @@ def eval_global_wr2_ensemble(
 
             preds_models: list[torch.Tensor] = []
             for model in models:
-                preds_rots: list[torch.Tensor] = []
-                for k in range(n_rots):
-                    x_rot = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
-                    p_log = model(x_rot).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
-                    preds_rots.append(p)
-                preds_models.append(_agg_stack(preds_rots, tta_agg))
+                x_tta = tta_batch(x, flatten=True)
+                p_log = model(x_tta).float()
+                p = torch.expm1(p_log).clamp_min(0.0)
+                p = p.view(x.size(0), int(tta_n), -1)
+                preds_models.append(_agg_tta(p, tta_agg))
 
             p_ens = _agg_stack(preds_models, ens_agg)
 
