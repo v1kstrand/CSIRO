@@ -184,7 +184,6 @@ def train_one_fold(
     comet_exp: Any | None = None,
     skip_log_first_n: int = 5,
     curr_fold: int = 0,
-    cv_seed: int | None = None,
     swa_epochs: int = 15,
     swa_lr_start: float | None = None,
     swa_lr_final: float | None = None,
@@ -305,10 +304,9 @@ def train_one_fold(
         score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
-            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
             p = {
-                f"x_train_loss_cv{curr_fold}_m{model_idx}{seed_tag}": float(train_loss),
-                f"x_val_wR2_cv{curr_fold}_m{model_idx}{seed_tag}": float(score),
+                f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss),
+                f"x_val_wR2_cv{curr_fold}_m{model_idx}": float(score),
             }
             comet_exp.log_metrics(p, step=int(ep))
 
@@ -405,9 +403,8 @@ def train_one_fold(
         swa_model.update_parameters(model)
 
         if comet_exp is not None:
-            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
             comet_exp.log_metrics(
-                {f"x_swa_train_loss_cv{curr_fold}_m{model_idx}{seed_tag}": float(swa_loss)},
+                {f"x_swa_train_loss_cv{curr_fold}_m{model_idx}": float(swa_loss)},
                 step=int(k),
             )
             
@@ -417,9 +414,8 @@ def train_one_fold(
         if int(swa_eval_freq) > 0 and (int(k) % int(swa_eval_freq) == 0):
             swa_score = float(eval_global_wr2(swa_model, dl_va, eval_w, device=device))
             if comet_exp is not None:
-                seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
                 comet_exp.log_metrics(
-                    {f"swa_wR2_cv{curr_fold}_m{model_idx}{seed_tag}": float(swa_score)},
+                    {f"swa_wR2_cv{curr_fold}_m{model_idx}": float(swa_score)},
                     step=int(k),
                 )
                 p_bar.set_postfix_str(s2 + f" | swa_wR2={swa_score:.4f}")
@@ -461,7 +457,6 @@ def eval_global_wr2_ensemble(
     ens_agg: str = "mean",
     comet_exp: Any | None = None,
     curr_fold: int | None = None,
-    cv_seed: int | None = None,
 ) -> float:
     for model in models:
         if hasattr(model, "set_train"):
@@ -520,8 +515,7 @@ def eval_global_wr2_ensemble(
     score = (1.0 - ss_res / (ss_tot + 1e-12)).item()
     if comet_exp is not None:
         try:
-            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
-            comet_exp.log_metrics({str(f"1ENS_wR2_cv{curr_fold}{seed_tag}"): float(score)})
+            comet_exp.log_metrics({str(f"1ENS_wR2_cv{curr_fold}"): float(score)})
         except Exception:
             pass
     return float(score)
@@ -598,8 +592,6 @@ def run_groupkfold_cv(
         groups = wide_df["Sampling_Date"].values
         cv_iter = gkf.split(wide_df, groups=groups)
     elif mode == "pairs":
-        # ((0,2),(1,4),(3,9),(5,7),(6,8)) #1
-        # ((0,1),(2,6),(3,8),(4,9),(5,7)) #2
         if "pairs" not in cv_params:
             raise ValueError("cv_params must include 'pairs' for mode='pairs'.")
         pairs_sel = cv_params["pairs"]
@@ -664,7 +656,6 @@ def run_groupkfold_cv(
                     fold_idx=int(fold_idx),
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
-                    cv_seed=None if cv_seed is None else int(cv_seed),
                     model_idx=int(model_idx),
                     backbone_dtype=backbone_dtype,
                     trainable_dtype=trainable_dtype,
@@ -725,15 +716,13 @@ def run_groupkfold_cv(
                 trainable_dtype=trainable_dtype,
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
-                cv_seed=None if cv_seed is None else int(cv_seed),
             )
             fold_scores.append(float(fold_score))
     finally:
         if comet_exp is not None:
             fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
-            seed_tag = f"_seed{int(cv_seed)}" if cv_seed is not None else ""
-            comet_exp.log_metric(f"0cv_mean{seed_tag}", fold_scores_np.mean())
-            comet_exp.log_metric(f"0cv_std{seed_tag}", fold_scores_np.std(ddof=0))
+            comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
+            comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)

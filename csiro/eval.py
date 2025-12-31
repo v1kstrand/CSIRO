@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+import glob
 
 import torch
 from torch.utils.data import DataLoader
@@ -130,6 +132,31 @@ def _build_model_from_state(
 def load_states_from_pt(pt_path: str) -> Any:
     ckpt = torch.load(pt_path, map_location="cpu", weights_only=False)
     return ckpt["states"] if isinstance(ckpt, dict) and "states" in ckpt else ckpt
+
+
+def load_ensemble_states(pt_paths: list[str] | str) -> list[dict[str, Any]]:
+    if isinstance(pt_paths, (str, Path)):
+        pt_paths = [str(pt_paths)]
+    paths: list[str] = []
+    for p in pt_paths:
+        if any(ch in p for ch in "*?[]"):
+            paths.extend(sorted(glob.glob(p)))
+        else:
+            paths.append(p)
+    if not paths:
+        raise ValueError("No checkpoint paths provided.")
+
+    states_all: list[dict[str, Any]] = []
+    for p in paths:
+        states = load_states_from_pt(str(p))
+        if isinstance(states, dict) and "seed_results" in states:
+            for v in states["seed_results"].values():
+                states_all.extend(_flatten_states(v))
+        else:
+            states_all.extend(_flatten_states(states))
+    if not states_all:
+        raise ValueError("No states found in checkpoints.")
+    return states_all
 
 
 def _require(state: dict[str, Any], key: str) -> Any:
