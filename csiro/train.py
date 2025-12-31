@@ -649,11 +649,11 @@ def run_groupkfold_cv(
             exp_name = comet_exp_name + "_" + exp_name
             comet_exp.set_name(exp_name)
 
-    for fold_idx, (tr_idx, va_idx) in enumerate(cv_iter):
-        model_scores: list[float] = []
-        model_states: list[dict[str, Any]] = []
-        for model_idx in range(int(n_models)):
-            train_tfms = train_tfms_list[int(model_idx)]
+        for fold_idx, (tr_idx, va_idx) in enumerate(cv_iter):
+            model_scores: list[float] = []
+            model_states: list[dict[str, Any]] = []
+            for model_idx in range(int(n_models)):
+                train_tfms = train_tfms_list[int(model_idx)]
                 ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
                 result = train_one_fold(
                     wide_df=wide_df,
@@ -664,16 +664,16 @@ def run_groupkfold_cv(
                     fold_idx=int(fold_idx),
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
-                cv_seed=None if cv_seed is None else int(cv_seed),
-                model_idx=int(model_idx),
-                backbone_dtype=backbone_dtype,
-                trainable_dtype=trainable_dtype,
-                return_state=True,
-                **train_kwargs,
-            )
+                    cv_seed=None if cv_seed is None else int(cv_seed),
+                    model_idx=int(model_idx),
+                    backbone_dtype=backbone_dtype,
+                    trainable_dtype=trainable_dtype,
+                    return_state=True,
+                    **train_kwargs,
+                )
                 if isinstance(result, float) and math.isnan(result):
                     return
-                
+
                 model_scores.append(float(result["score"]))
                 model_states.append(
                     dict(
@@ -726,11 +726,8 @@ def run_groupkfold_cv(
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
                 cv_seed=None if cv_seed is None else int(cv_seed),
-                
             )
             fold_scores.append(float(fold_score))
-            
-            
     finally:
         if comet_exp is not None:
             fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
