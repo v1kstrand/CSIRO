@@ -10,7 +10,6 @@ import torch
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from csiro.amp import set_dtype
 from csiro.config import (
     DEFAULT_DATA_ROOT,
     DEFAULT_DINO_REPO_DIR,
@@ -23,7 +22,7 @@ from csiro.config import (
     parse_dtype,
 )
 from csiro.data import BiomassBaseCached, load_train_wide
-from csiro.train import run_groupkfold_cv, run_groupkfold_cv_across_seeds
+from csiro.train import run_groupkfold_cv
 
 def train_cv(
     *,
@@ -40,9 +39,6 @@ def train_cv(
     cfg: dict[str, Any] = dict(DEFAULTS)
     if overrides:
         cfg.update(overrides)
-    dtype_t = parse_dtype(cfg["trainable_dtype"])
-    set_dtype(dtype_t)
-
     device = str(cfg.get("device", "cuda"))
     if device.startswith("cuda") and not torch.cuda.is_available():
         device = "cpu"
@@ -66,7 +62,6 @@ def train_cv(
     )
 
     base_kwargs = dict(cfg)
-    base_kwargs.pop("trainable_dtype", None)
     base_kwargs.update(
         dict(
             dataset=dataset,
@@ -83,20 +78,11 @@ def train_cv(
         kwargs.update({k: v for k, v in sweep.items()})
         kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-:")[:40]
 
-        cv_seeds = kwargs.pop("cv_seed", None)
-        if cv_seeds is None:
-            cv_seeds = DEFAULTS["cv_seed"]
-        if not isinstance(cv_seeds, (list, tuple, set)):
-            cv_seeds = [cv_seeds]
-        result = run_groupkfold_cv_across_seeds(
-            cv_seeds=list(cv_seeds),
-            **kwargs,
-        )
+        result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(
             dict(
                 config_name=kwargs["config_name"],
-                seed_results=result["seed_results"],
-                summary=result["summary"],
+                result=result,
             )
         )
 

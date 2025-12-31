@@ -202,6 +202,7 @@ def predict_ensemble(
     num_workers: int | None = None,
     device: str | torch.device = "cuda",
     backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     seed_agg: str = "flatten",
@@ -228,6 +229,10 @@ def predict_ensemble(
         backbone_dtype = DEFAULTS["backbone_dtype"]
     if isinstance(backbone_dtype, str):
         backbone_dtype = parse_dtype(backbone_dtype)
+    if trainable_dtype is None:
+        trainable_dtype = DEFAULTS["trainable_dtype"]
+    if isinstance(trainable_dtype, str):
+        trainable_dtype = parse_dtype(trainable_dtype)
 
     tfms = post_tfms()
     seed_agg = str(seed_agg).lower()
@@ -239,7 +244,7 @@ def predict_ensemble(
             model.eval()
 
         preds: list[torch.Tensor] = []
-        with torch.inference_mode(), autocast_context(device):
+        with torch.inference_mode(), autocast_context(device, dtype=trainable_dtype):
             for batch in dl:
                 if isinstance(batch, (tuple, list)) and len(batch) >= 1:
                     x = batch[0]
@@ -292,6 +297,7 @@ def predict_ensemble_from_pt(
     num_workers: int | None = None,
     device: str | torch.device = "cuda",
     backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     seed_agg: str = "flatten",
@@ -305,6 +311,7 @@ def predict_ensemble_from_pt(
         num_workers=num_workers,
         device=device,
         backbone_dtype=backbone_dtype,
+        trainable_dtype=trainable_dtype,
         tta_agg=tta_agg,
         ens_agg=ens_agg,
         seed_agg=seed_agg,

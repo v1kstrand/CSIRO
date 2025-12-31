@@ -33,8 +33,7 @@ DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
     
 DEFAULTS: dict[str, Any] = dict(
-    n_splits=5,
-    group_col="Sampling_Date",
+    cv_params=dict(mode="gkf", cv_seed=0, n_splits=5),
     device="cuda",
     verbose=False,
     epochs=80,
@@ -63,8 +62,6 @@ DEFAULTS: dict[str, Any] = dict(
     hue_range=(0.02, 0.08),
     backbone_dtype="fp16",
     trainable_dtype="fp16",
-    seed_eval_mode="all_folds",
-    cv_seed=(126015,), # 1527
     save_output_dir="/notebooks/kaggle/csiro/output",
     plot_imgs=False
 )
@@ -101,4 +98,3 @@ def parse_dtype(dtype: str):
     raise ValueError(f"Unknown dtype: {dtype}")
 
 
-DTYPE = parse_dtype(DEFAULTS["trainable_dtype"])

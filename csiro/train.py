@@ -7,6 +7,7 @@ from typing import Any, Callable
 import uuid
 
 import numpy as np
+import pandas as pd
 import torch
 import torchvision.transforms as T
 from sklearn.model_selection import GroupKFold
@@ -154,18 +155,6 @@ def _set_swa_lr(swa_lr_start, swa_lr_final, lr_final):
     return swa_lr_start, swa_lr_final
 
 
-def _normalize_cv_seeds(cv_seed) -> list[int]:
-    if cv_seed is None:
-        cv_seed = DEFAULTS["cv_seed"]
-    if isinstance(cv_seed, (list, tuple, set)):
-        seeds = [int(s) for s in cv_seed]
-    else:
-        seeds = [int(cv_seed)]
-    if not seeds:
-        raise ValueError("cv_seed must contain at least one seed.")
-    return seeds
-
-
 def train_one_fold(
     *,
     ds_tr_view,
@@ -191,6 +180,7 @@ def train_one_fold(
     num_neck: int = 0,
     num_workers: int | None = None,
     backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
     comet_exp: Any | None = None,
     skip_log_first_n: int = 5,
     curr_fold: int = 0,
@@ -233,6 +223,10 @@ def train_one_fold(
         backbone_dtype = parse_dtype(DEFAULTS["backbone_dtype"])
     elif isinstance(backbone_dtype, str):
         backbone_dtype = parse_dtype(backbone_dtype)
+    if trainable_dtype is None:
+        trainable_dtype = parse_dtype(DEFAULTS["trainable_dtype"])
+    elif isinstance(trainable_dtype, str):
+        trainable_dtype = parse_dtype(trainable_dtype)
 
     model = DINOv3Regressor(
         backbone,
@@ -264,7 +258,7 @@ def train_one_fold(
     trainable_params = _trainable_params_list(model)
     
     opt = torch.optim.AdamW(trainable_params, lr=float(lr_start), weight_decay=float(wd))
-    scaler = grad_scaler(device)
+    scaler = grad_scaler(device, dtype=trainable_dtype)
 
     best_score = -1e9
     best_state = None
@@ -285,7 +279,7 @@ def train_one_fold(
             y_log = y_log.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
-            with autocast_context(device):
+            with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
                 loss = criterion(p_log, y_log)
 
@@ -386,7 +380,7 @@ def train_one_fold(
             y_log = y_log.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
-            with autocast_context(device):
+            with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
                 loss = criterion(p_log, y_log)
 
@@ -462,6 +456,7 @@ def eval_global_wr2_ensemble(
     w_vec: torch.Tensor,
     *,
     device: str | torch.device = "cuda",
+    trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
     ens_agg: str = "mean",
     comet_exp: Any | None = None,
@@ -479,7 +474,12 @@ def eval_global_wr2_ensemble(
     sum_wy = torch.zeros((), device=device)
     sum_wy2 = torch.zeros((), device=device)
 
-    with torch.inference_mode(), autocast_context(device):
+    if trainable_dtype is None:
+        trainable_dtype = parse_dtype(DEFAULTS["trainable_dtype"])
+    elif isinstance(trainable_dtype, str):
+        trainable_dtype = parse_dtype(trainable_dtype)
+
+    with torch.inference_mode(), autocast_context(device, dtype=trainable_dtype):
         for batch in dl_va:
             if isinstance(batch, (tuple, list)) and len(batch) >= 2:
                 x, y_log = batch[0], batch[1]
@@ -527,14 +527,48 @@ def eval_global_wr2_ensemble(
     return float(score)
 
 
+
+
+def fold_id_from_pairs(groups: np.ndarray, pairs) -> np.ndarray:
+    groups = np.asarray(groups)
+    uniq_groups = np.asarray(pd.unique(groups))  # index -> label mapping used by pairs
+
+    fold_id = np.full(groups.shape[0], -1, dtype=np.int64)
+
+    for f, (i, j) in enumerate(pairs):
+        gi = uniq_groups[int(i)]
+        gj = uniq_groups[int(j)]
+        mask = (groups == gi) | (groups == gj)
+        fold_id[mask] = f
+
+    if (fold_id < 0).any():
+        missing = np.unique(groups[fold_id < 0])
+        raise ValueError(f"Unassigned samples. Missing groups: {missing[:10]}")
+    return fold_id
+
+
+def cv_iter_from_pairs(groups_pairs: np.ndarray, pairs, n_splits: int):
+    fold_id = fold_id_from_pairs(groups_pairs, pairs)
+    for f in range(int(n_splits)):
+        va_idx = np.where(fold_id == f)[0]
+        tr_idx = np.where(fold_id != f)[0]
+        yield tr_idx, va_idx
+
+
+def make_groups_state_quarter(df, date_col="Sampling_Date", state_col="State"):
+    d = df[date_col]
+    if not pd.api.types.is_datetime64_any_dtype(d):
+        d = pd.to_datetime(d, errors="raise")
+    quarter = d.dt.to_period("Q").astype(str)
+    return (df[state_col].astype(str) + "_" + quarter).to_numpy()
+
+
 def run_groupkfold_cv(
     *,
     dataset,
     wide_df,
-    n_splits: int = 5,
-    group_col: str = "Sampling_Date",
-    cv_seed: int | list[int] | None = None,
     backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
     tfms: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
@@ -542,14 +576,38 @@ def run_groupkfold_cv(
     img_size: int | None = None,
     return_details: bool = False,
     save_output_dir: str | None = None,
+    cv_params: dict[str, Any] | None = None,
     **train_kwargs,
 ):
-    seeds = _normalize_cv_seeds(cv_seed)
-    if len(seeds) != 1:
-        raise ValueError("cv_seed must be a single seed for run_groupkfold_cv.")
-    cv_seed = int(seeds[0])
-    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
-    groups = wide_df[group_col].values
+    if cv_params is None:
+        cv_params = DEFAULTS.get("cv_params")
+    if not isinstance(cv_params, dict):
+        raise ValueError("cv_params must be a dict.")
+    if "mode" not in cv_params:
+        raise ValueError("cv_params must include 'mode'.")
+
+    mode = str(cv_params["mode"]).lower()
+    n_splits = int(cv_params.get("n_splits", DEFAULTS["cv_params"]["n_splits"]))
+    cv_seed: int | None = None
+
+    if mode == "gkf":
+        if "cv_seed" not in cv_params:
+            raise ValueError("cv_params must include 'cv_seed' for mode='gkf'.")
+        cv_seed = int(cv_params["cv_seed"])
+        gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
+        groups = wide_df["Sampling_Date"].values
+        cv_iter = gkf.split(wide_df, groups=groups)
+    elif mode == "pairs":
+        # ((0,2),(1,4),(3,9),(5,7),(6,8)) #1
+        # ((0,1),(2,6),(3,8),(4,9),(5,7)) #2
+        if "pairs" not in cv_params:
+            raise ValueError("cv_params must include 'pairs' for mode='pairs'.")
+        pairs_sel = cv_params["pairs"]
+        groups_sq = make_groups_state_quarter(wide_df, "Sampling_Date", "State")
+        cv_iter = cv_iter_from_pairs(groups_pairs=groups_sq, pairs=pairs_sel, n_splits=n_splits)
+    else:
+        raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
+            
 
     if tfms is not None:
         raise ValueError("tfms is deprecated; use bcs_range/hue_range sweep instead.")
@@ -591,11 +649,11 @@ def run_groupkfold_cv(
             exp_name = comet_exp_name + "_" + exp_name
             comet_exp.set_name(exp_name)
 
-        for fold_idx, (tr_idx, va_idx) in enumerate(gkf.split(wide_df, groups=groups)):
-            model_scores: list[float] = []
-            model_states: list[dict[str, Any]] = []
-            for model_idx in range(int(n_models)):
-                train_tfms = train_tfms_list[int(model_idx)]
+    for fold_idx, (tr_idx, va_idx) in enumerate(cv_iter):
+        model_scores: list[float] = []
+        model_states: list[dict[str, Any]] = []
+        for model_idx in range(int(n_models)):
+            train_tfms = train_tfms_list[int(model_idx)]
                 ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
                 result = train_one_fold(
                     wide_df=wide_df,
@@ -606,12 +664,13 @@ def run_groupkfold_cv(
                     fold_idx=int(fold_idx),
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
-                    cv_seed=int(cv_seed),
-                    model_idx=int(model_idx),
-                    backbone_dtype=backbone_dtype,
-                    return_state=True,
-                    **train_kwargs,
-                )
+                cv_seed=None if cv_seed is None else int(cv_seed),
+                model_idx=int(model_idx),
+                backbone_dtype=backbone_dtype,
+                trainable_dtype=trainable_dtype,
+                return_state=True,
+                **train_kwargs,
+            )
                 if isinstance(result, float) and math.isnan(result):
                     return
                 
@@ -663,9 +722,10 @@ def run_groupkfold_cv(
                 dl_va,
                 criterion.w,
                 device=train_kwargs["device"],
+                trainable_dtype=trainable_dtype,
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
-                cv_seed=int(cv_seed),
+                cv_seed=None if cv_seed is None else int(cv_seed),
                 
             )
             fold_scores.append(float(fold_score))
@@ -704,65 +764,3 @@ def run_groupkfold_cv(
         }
 
 
-def run_groupkfold_cv_across_seeds(
-    *,
-    cv_seeds: list[int] | tuple[int, ...] | None = None,
-    save_output_dir: str | None = None,
-    config_name: str = "",
-    seed_eval_mode: str = "all_folds",
-    **kwargs,
-) -> dict[str, Any]:
-    seeds = _normalize_cv_seeds(cv_seeds)
-    outputs: dict[str, Any] = {}
-    save_output_path = None
-
-    if save_output_dir is not None:
-        os.makedirs(save_output_dir, exist_ok=True)
-        uid = "_" + str(uuid.uuid4())[:3]
-        base = f"{config_name}{uid}" if config_name else f"cv_seeds{uid}"
-        save_output_path = os.path.join(save_output_dir, base + ".pt")
-        if not os.path.exists(save_output_path):
-            torch.save({}, save_output_path)
-    
-    print(seeds, save_output_path)
-    for seed in seeds:
-        result = run_groupkfold_cv(
-            cv_seed=int(seed),
-            save_output_dir=None,
-            return_details=True,
-            config_name=config_name,
-            **kwargs,
-        )
-        outputs[str(seed)] = result
-        if save_output_path is not None:
-            torch.save(outputs, save_output_path)
-
-    mode = str(seed_eval_mode).lower()
-    all_fold_scores: list[float] = []
-    seed_means: list[float] = []
-    for res in outputs.values():
-        fs = np.asarray(res["fold_scores"], dtype=np.float32).tolist()
-        all_fold_scores.extend(fs)
-        seed_means.append(float(np.mean(fs)))
-
-    summary: dict[str, Any] = dict(seed_eval_mode=mode)
-    if mode == "per_seed_mean":
-        seed_means_np = np.asarray(seed_means, dtype=np.float32)
-        summary.update(
-            dict(
-                mean=float(seed_means_np.mean()) if seed_means_np.size else float("nan"),
-                std=float(seed_means_np.std(ddof=0)) if seed_means_np.size else float("nan"),
-            )
-        )
-    elif mode == "all_folds":
-        all_scores_np = np.asarray(all_fold_scores, dtype=np.float32)
-        summary.update(
-            dict(
-                mean=float(all_scores_np.mean()) if all_scores_np.size else float("nan"),
-                std=float(all_scores_np.std(ddof=0)) if all_scores_np.size else float("nan"),
-            )
-        )
-    else:
-        raise ValueError(f"Unknown seed_eval_mode: {seed_eval_mode}")
-
-    return dict(seed_results=outputs, summary=summary)

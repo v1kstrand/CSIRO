@@ -133,12 +133,13 @@ class TTADataset(Dataset):
         else:
             img, y = item, None
 
-        if self.post is not None and not torch.is_tensor(img):
-            img = self.post(img)
+        if torch.is_tensor(img):
+            raise ValueError("TTADataset expects PIL images; apply post_tfms inside TTADataset.")
+        if self.post is None:
+            raise ValueError("TTADataset requires apply_post_tfms=True.")
 
-        x_tta = self.tta(img, flatten=False)
-        if x_tta.ndim == 5 and x_tta.size(0) == 1:
-            x_tta = x_tta.squeeze(0)
+        tta_imgs = self.tta(img)
+        x_tta = torch.stack([self.post(im) for im in tta_imgs], dim=0)
         if y is None:
             return x_tta
         return x_tta, y

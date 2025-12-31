@@ -63,16 +63,12 @@ class TTABatch:
         tta_n: int = 4,
         bcs_val: float = 0.0,
         hue_val: float = 0.0,
-        mean: tuple[float, float, float] = IMAGENET_MEAN,
-        std: tuple[float, float, float] = IMAGENET_STD,
     ):
         self.tta_n = int(tta_n)
         if self.tta_n <= 0:
             raise ValueError("tta_n must be >= 1.")
         self.bcs_val = float(bcs_val)
         self.hue_val = float(hue_val)
-        self._mean = torch.tensor(mean).view(1, 3, 1, 1)
-        self._std = torch.tensor(std).view(1, 3, 1, 1)
         self._jitter = (
             T.ColorJitter(
                 brightness=self.bcs_val,
@@ -92,40 +88,24 @@ class TTABatch:
             return base[:tta_n]
         return [base[i % 8] for i in range(tta_n)]
 
-    def _unnorm(self, x: torch.Tensor) -> torch.Tensor:
-        mean = self._mean.to(device=x.device, dtype=x.dtype)
-        std = self._std.to(device=x.device, dtype=x.dtype)
-        return x * std + mean
+    def __call__(self, img: Image.Image) -> list[Image.Image]:
+        if torch.is_tensor(img):
+            raise ValueError("TTABatch expects PIL images; apply post_tfms after TTA.")
+        if not isinstance(img, Image.Image):
+            raise ValueError(f"TTABatch expects PIL images, got {type(img)}.")
 
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        mean = self._mean.to(device=x.device, dtype=x.dtype)
-        std = self._std.to(device=x.device, dtype=x.dtype)
-        return (x - mean) / std
-
-    def _apply_jitter(self, x: torch.Tensor) -> torch.Tensor:
-        if self.bcs_val == 0.0 and self.hue_val == 0.0:
-            return x
-        x = self._unnorm(x).clamp(0.0, 1.0)
-        x = self._jitter(x)
-        x = x.clamp(0.0, 1.0)
-        return self._norm(x)
-
-    def __call__(self, x: torch.Tensor, *, flatten: bool = True) -> torch.Tensor:
-        if x.ndim == 3:
-            x = x.unsqueeze(0)
-        if x.ndim != 4:
-            raise ValueError(f"Expected input [B,C,H,W] or [C,H,W], got {tuple(x.shape)}")
-
-        outs: list[torch.Tensor] = []
-        for i, (k, do_hflip) in enumerate(self._ops):
-            x_t = x if k == 0 else torch.rot90(x, k, dims=(-2, -1))
+        outs: list[Image.Image] = []
+        for k, do_hflip in self._ops:
+            x_t = img
+            if k == 1:
+                x_t = x_t.transpose(Image.ROTATE_90)
+            elif k == 2:
+                x_t = x_t.transpose(Image.ROTATE_180)
+            elif k == 3:
+                x_t = x_t.transpose(Image.ROTATE_270)
             if do_hflip:
-                x_t = torch.flip(x_t, dims=(-1,))
-            x_t = self._apply_jitter(x_t)
+                x_t = x_t.transpose(Image.FLIP_LEFT_RIGHT)
+            if self._jitter is not None:
+                x_t = self._jitter(x_t)
             outs.append(x_t)
-
-        out = torch.stack(outs, dim=1)
-        if flatten:
-            b, t, c, h, w = out.shape
-            return out.view(b * t, c, h, w)
-        return out
+        return outs
