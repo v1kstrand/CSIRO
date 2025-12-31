@@ -118,9 +118,10 @@ class TTADataset(Dataset):
         apply_post_tfms: bool = True,
     ):
         self.base = base
+        self.tta_n = int(tta_n)
         self.apply_post_tfms = bool(apply_post_tfms)
         self.post = post_tfms() if self.apply_post_tfms else None
-        self.tta = TTABatch(tta_n=int(tta_n), bcs_val=float(bcs_val), hue_val=float(hue_val))
+        self.tta = TTABatch(tta_n=self.tta_n, bcs_val=float(bcs_val), hue_val=float(hue_val))
 
     def __len__(self) -> int:
         return len(self.base)

@@ -107,6 +107,24 @@ def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
     return tfms(x).unsqueeze(0)
 
 
+def _get_tta_n(data) -> int:
+    obj = data
+    for _ in range(4):
+        if hasattr(obj, "tta_n"):
+            try:
+                return int(getattr(obj, "tta_n"))
+            except Exception:
+                return 1
+        if hasattr(obj, "dataset"):
+            obj = getattr(obj, "dataset")
+            continue
+        if hasattr(obj, "base"):
+            obj = getattr(obj, "base")
+            continue
+        break
+    return 1
+
+
 def _build_model_from_state(
     backbone,
     state: dict[str, Any],
@@ -193,6 +211,10 @@ def train_one_fold(
     va_subset = Subset(ds_va_view, va_idx)
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
+    val_bs = int(batch_size)
+    tta_n = _get_tta_n(ds_va_view)
+    if tta_n > 1:
+        val_bs = max(1, int(batch_size) // int(tta_n))
     dl_kwargs = dict(
         batch_size=int(batch_size),
         pin_memory=str(device).startswith("cuda"),
@@ -200,7 +222,7 @@ def train_one_fold(
         persistent_workers=(num_workers > 0),
     )
     dl_tr = DataLoader(tr_subset, shuffle=True, **dl_kwargs)
-    dl_va = DataLoader(va_subset, shuffle=False, **dl_kwargs)
+    dl_va = DataLoader(va_subset, shuffle=False, **{**dl_kwargs, "batch_size": int(val_bs)})
 
     if plot_imgs:
         from .viz import show_nxn_grid

@@ -84,6 +84,24 @@ def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
     return tfms(x).unsqueeze(0)
 
 
+def _get_tta_n(data) -> int:
+    obj = data
+    for _ in range(4):
+        if hasattr(obj, "tta_n"):
+            try:
+                return int(getattr(obj, "tta_n"))
+            except Exception:
+                return 1
+        if hasattr(obj, "dataset"):
+            obj = getattr(obj, "dataset")
+            continue
+        if hasattr(obj, "base"):
+            obj = getattr(obj, "base")
+            continue
+        break
+    return 1
+
+
 def _build_model_from_state(
     backbone,
     state: dict[str, Any],
@@ -194,6 +212,9 @@ def predict_ensemble(
         dl = data
     else:
         num_workers = default_num_workers() if num_workers is None else int(num_workers)
+        tta_n = _get_tta_n(data)
+        if tta_n > 1:
+            batch_size = max(1, int(batch_size) // int(tta_n))
         dl = DataLoader(
             data,
             shuffle=False,
