@@ -33,7 +33,8 @@ DEFAULT_MODEL_SIZE: str = "b"
 DEFAULT_PLUS: str = ""
     
 DEFAULTS: dict[str, Any] = dict(
-    cv_params=dict(mode="gkf", cv_seed=0, n_splits=5),
+    cv_params=dict(mode="gkf", cv_seed=0, n_splits=5, max_folds=None),
+    max_folds=None,
     device="cuda",
     verbose=False,
     epochs=80,

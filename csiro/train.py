@@ -594,6 +594,7 @@ def run_groupkfold_cv(
     return_details: bool = False,
     save_output_dir: str | None = None,
     cv_params: dict[str, Any] | None = None,
+    max_folds: int | None = None,
     **train_kwargs,
 ):
     if cv_params is None:
@@ -603,18 +604,21 @@ def run_groupkfold_cv(
     if "mode" not in cv_params:
         raise ValueError("cv_params must include 'mode'.")
 
-    mode = str(cv_params["mode"]).lower()
+    split_mode = str(cv_params["mode"]).lower()
     n_splits = int(cv_params.get("n_splits", DEFAULTS["cv_params"]["n_splits"]))
+    if max_folds is None:
+        max_folds = cv_params.get("max_folds", DEFAULTS.get("max_folds", None))
+    max_folds = None if max_folds is None else int(max_folds)
     cv_seed: int | None = None
 
-    if mode == "gkf":
+    if split_mode == "gkf":
         if "cv_seed" not in cv_params:
             raise ValueError("cv_params must include 'cv_seed' for mode='gkf'.")
         cv_seed = int(cv_params["cv_seed"])
         gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
         groups = wide_df["Sampling_Date"].values
         cv_iter = gkf.split(wide_df, groups=groups)
-    elif mode == "pairs":
+    elif split_mode == "pairs":
         if "pairs" not in cv_params:
             raise ValueError("cv_params must include 'pairs' for mode='pairs'.")
         pairs_sel = cv_params["pairs"]
@@ -642,7 +646,7 @@ def run_groupkfold_cv(
         import comet_ml  # type: ignore
         
         if "uid" in comet_exp_name:
-            uid = "_" + str(uuid.uuid4())[:3]
+            uid = "_" + str(uuid.uuid4())[:5]
             comet_exp_name = comet_exp_name.replace("uid", "") + uid
 
         comet_exp = comet_ml.start(
@@ -665,6 +669,8 @@ def run_groupkfold_cv(
             comet_exp.set_name(exp_name)
 
         for fold_idx, (tr_idx, va_idx) in enumerate(cv_iter):
+            if max_folds is not None and int(fold_idx) >= int(max_folds):
+                break
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             for model_idx in range(int(n_models)):
