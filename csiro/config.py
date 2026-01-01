@@ -56,6 +56,7 @@ DEFAULTS: dict[str, Any] = dict(
     n_models=3,
     w_std_alpha= -1.,
     smooth_l1_beta= -1.,
+    tau_physics=0.0,
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,
     bcs_range=(0.2, 0.4),

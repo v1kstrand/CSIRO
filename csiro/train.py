@@ -18,7 +18,12 @@ from tqdm.auto import tqdm
 from .amp import autocast_context, grad_scaler
 from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, DEFAULTS, parse_dtype
 from .data import TransformView
-from .losses import WeightedMSELoss, WeightedSmoothL1Loss, std_balanced_weights
+from .losses import (
+    PhysicsConsistencyLoss,
+    WeightedMSELoss,
+    WeightedSmoothL1Loss,
+    std_balanced_weights,
+)
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor
 from .transforms import base_train_comp, post_tfms
@@ -194,7 +199,9 @@ def train_one_fold(
     return_state: bool = False,
     wide_df = None,
     w_std_alpha: float = -1.,
-    smooth_l1_beta: float = -1.
+    smooth_l1_beta: float = -1.,
+    tau_physics: float = 0.0,
+    physics_from_log: bool = True,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -253,6 +260,10 @@ def train_one_fold(
         criterion = WeightedMSELoss(weights=w_loss).to(device)
     else:
         criterion = WeightedSmoothL1Loss(weights=w_loss, beta=float(smooth_l1_beta)).to(device)
+    phys_criterion = PhysicsConsistencyLoss(
+        tau_physics=float(tau_physics),
+        from_log=bool(physics_from_log),
+    ).to(device)
     
     trainable_params = _trainable_params_list(model)
     
@@ -273,14 +284,21 @@ def train_one_fold(
         running = 0.0
         n_seen = 0
 
-        for x, y_log in dl_tr:
+        for bi, (x, y_log) in enumerate(dl_tr):
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
-                loss = criterion(p_log, y_log)
+                log_phys = comet_exp is not None and int(ep) > int(skip_log_first_n) and int(bi) == 0
+                loss_main = criterion(p_log, y_log)
+                loss_phys = phys_criterion(
+                    p_log,
+                    comet_exp=comet_exp if log_phys else None,
+                    step=int(ep),
+                )
+                loss = loss_main + loss_phys
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -296,7 +314,7 @@ def train_one_fold(
                 opt.step()
 
             bs = int(x.size(0))
-            running += float(loss.detach().item()) * bs
+            running += float(loss_main.detach().item()) * bs
             n_seen += bs
 
         train_loss = running / max(int(n_seen), 1)
@@ -373,14 +391,19 @@ def train_one_fold(
         running = 0.0
         swa_n_seen = 0
 
-        for x, y_log in dl_tr:
+        for bi, (x, y_log) in enumerate(dl_tr):
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
-                loss = criterion(p_log, y_log)
+                log_phys = comet_exp is not None and int(bi) == 0
+                loss = criterion(p_log, y_log) + phys_criterion(
+                    p_log,
+                    comet_exp=comet_exp if log_phys else None,
+                    step=int(k),
+                )
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
