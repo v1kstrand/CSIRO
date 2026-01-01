@@ -63,7 +63,7 @@ class PhysicsConsistencyLoss(nn.Module):
         tau_physics: float = 0.0,
         *,
         from_log: bool = True,
-        w_total: float = 0.5,
+        w_total: float = 0.25,
         w_gdm: float = 1.0,
         w_ineq: float = 0.5,
     ):
