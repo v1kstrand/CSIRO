@@ -298,8 +298,8 @@ def predict_ensemble(
                     else:
                         raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
-        p_ens = _agg_stack(preds_models, inner_agg)
-        preds.append(p_ens.detach().cpu())
+                p_ens = _agg_stack(preds_models, inner_agg)
+                preds.append(p_ens.detach().cpu())
 
         return torch.cat(preds, dim=0)
 
