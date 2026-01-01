@@ -32,21 +32,28 @@ def _flatten_states(states: Any) -> list[dict[str, Any]]:
     return list(states)
 
 
-def _extract_seed_states(states: Any) -> dict[str, list[dict[str, Any]]]:
+def _normalize_runs(states: Any) -> list[list[dict[str, Any]]]:
     if _is_state_dict(states):
-        return {"0": [states]}
+        return [[states]]
     if isinstance(states, dict) and "seed_results" in states:
         states = states["seed_results"]
     if isinstance(states, dict) and "states" in states:
-        return {"0": _flatten_states(states["states"])}
+        return [_flatten_states(states["states"])]
     if isinstance(states, dict):
-        seed_map: dict[str, list[dict[str, Any]]] = {}
-        for k, v in states.items():
+        runs: list[list[dict[str, Any]]] = []
+        for _, v in states.items():
             if isinstance(v, dict) and "states" in v:
                 v = v["states"]
-            seed_map[str(k)] = _flatten_states(v)
-        return seed_map
-    return {"0": _flatten_states(states)}
+            runs.append(_flatten_states(v))
+        return runs
+    if isinstance(states, list):
+        if not states:
+            return []
+        if isinstance(states[0], dict):
+            return [states]
+        if isinstance(states[0], list):
+            return [list(run) for run in states]
+    return [_flatten_states(states)]
 
 
 def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
@@ -134,7 +141,7 @@ def load_states_from_pt(pt_path: str) -> Any:
     return ckpt["states"] if isinstance(ckpt, dict) and "states" in ckpt else ckpt
 
 
-def load_ensemble_states(pt_paths: list[str] | str) -> list[dict[str, Any]]:
+def load_ensemble_states(pt_paths: list[str] | str) -> list[list[dict[str, Any]]]:
     if isinstance(pt_paths, (str, Path)):
         pt_paths = [str(pt_paths)]
     paths: list[str] = []
@@ -146,17 +153,13 @@ def load_ensemble_states(pt_paths: list[str] | str) -> list[dict[str, Any]]:
     if not paths:
         raise ValueError("No checkpoint paths provided.")
 
-    states_all: list[dict[str, Any]] = []
+    runs_all: list[list[dict[str, Any]]] = []
     for p in paths:
         states = load_states_from_pt(str(p))
-        if isinstance(states, dict) and "seed_results" in states:
-            for v in states["seed_results"].values():
-                states_all.extend(_flatten_states(v))
-        else:
-            states_all.extend(_flatten_states(states))
-    if not states_all:
+        runs_all.extend(_normalize_runs(states))
+    if not runs_all:
         raise ValueError("No states found in checkpoints.")
-    return states_all
+    return runs_all
 
 
 def _require(state: dict[str, Any], key: str) -> Any:
@@ -231,10 +234,10 @@ def predict_ensemble(
     backbone_dtype: str | torch.dtype | None = None,
     trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
-    ens_agg: str = "mean",
-    seed_agg: str = "flatten",
+    inner_agg: str = "mean",
+    outer_agg: str = "mean",
 ) -> torch.Tensor:
-    seed_states = _extract_seed_states(states)
+    runs = _normalize_runs(states)
 
     if isinstance(data, DataLoader):
         dl = data
@@ -262,7 +265,7 @@ def predict_ensemble(
         trainable_dtype = parse_dtype(trainable_dtype)
 
     tfms = post_tfms()
-    seed_agg = str(seed_agg).lower()
+    outer_agg = str(outer_agg).lower()
 
     def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
         for model in models:
@@ -295,24 +298,22 @@ def predict_ensemble(
                     else:
                         raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
-                p_ens = _agg_stack(preds_models, ens_agg)
-                preds.append(p_ens.detach().cpu())
+        p_ens = _agg_stack(preds_models, inner_agg)
+        preds.append(p_ens.detach().cpu())
 
         return torch.cat(preds, dim=0)
 
-    if seed_agg == "flatten":
-        flat_states = [s for ss in seed_states.values() for s in ss]
+    if outer_agg == "flatten":
+        flat_states = [s for run in runs for s in run]
         models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
         return _predict_with_models(models)
-    if seed_agg in ("mean", "median"):
-        preds_seeds: list[torch.Tensor] = []
-        for seed_key in sorted(seed_states.keys()):
-            models = [
-                _build_model_from_state(backbone, s, device, backbone_dtype) for s in seed_states[seed_key]
-            ]
-            preds_seeds.append(_predict_with_models(models))
-        return _agg_stack(preds_seeds, seed_agg)
-    raise ValueError(f"Unknown seed_agg: {seed_agg}")
+    if outer_agg in ("mean", "median"):
+        preds_runs: list[torch.Tensor] = []
+        for run in runs:
+            models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in run]
+            preds_runs.append(_predict_with_models(models))
+        return _agg_stack(preds_runs, outer_agg)
+    raise ValueError(f"Unknown outer_agg: {outer_agg}")
 
 
 def predict_ensemble_from_pt(
@@ -326,8 +327,8 @@ def predict_ensemble_from_pt(
     backbone_dtype: str | torch.dtype | None = None,
     trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
-    ens_agg: str = "mean",
-    seed_agg: str = "flatten",
+    inner_agg: str = "mean",
+    outer_agg: str = "flatten",
 ) -> torch.Tensor:
     states = load_states_from_pt(pt_path)
     return predict_ensemble(
@@ -340,6 +341,6 @@ def predict_ensemble_from_pt(
         backbone_dtype=backbone_dtype,
         trainable_dtype=trainable_dtype,
         tta_agg=tta_agg,
-        ens_agg=ens_agg,
-        seed_agg=seed_agg,
+        inner_agg=inner_agg,
+        outer_agg=outer_agg,
     )

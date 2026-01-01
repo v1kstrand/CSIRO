@@ -477,7 +477,7 @@ def eval_global_wr2_ensemble(
     device: str | torch.device = "cuda",
     trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
-    ens_agg: str = "mean",
+    inner_agg: str = "mean",
     comet_exp: Any | None = None,
     curr_fold: int | None = None,
 ) -> float:
@@ -522,7 +522,7 @@ def eval_global_wr2_ensemble(
                 else:
                     raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
-            p_ens = _agg_stack(preds_models, ens_agg)
+            p_ens = _agg_stack(preds_models, inner_agg)
 
             y = torch.expm1(y_log.float())
             diff = y - p_ens
