@@ -690,42 +690,42 @@ def run_groupkfold_cv(
                 break
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
-                for model_idx in range(int(n_models)):
-                    train_tfms = train_tfms_list[int(model_idx)]
-                    if tiled_inp:
-                        ds_tr_view = TiledTransformView(dataset, T.Compose([train_tfms, post_tfms()]))
-                    else:
-                        ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
-                    result = train_one_fold(
-                        wide_df=wide_df,
-                        ds_tr_view=ds_tr_view,
-                        ds_va_view=ds_va_view,
-                        tr_idx=tr_idx,
+            for model_idx in range(int(n_models)):
+                train_tfms = train_tfms_list[int(model_idx)]
+                if tiled_inp:
+                    ds_tr_view = TiledTransformView(dataset, T.Compose([train_tfms, post_tfms()]))
+                else:
+                    ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
+                result = train_one_fold(
+                    wide_df=wide_df,
+                    ds_tr_view=ds_tr_view,
+                    ds_va_view=ds_va_view,
+                    tr_idx=tr_idx,
                     va_idx=va_idx,
                     fold_idx=int(fold_idx),
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
-                        model_idx=int(model_idx),
-                        tiled_inp=bool(tiled_inp),
-                        backbone_dtype=backbone_dtype,
-                        trainable_dtype=trainable_dtype,
-                        return_state=True,
-                        **train_kwargs,
-                    )
+                    model_idx=int(model_idx),
+                    tiled_inp=bool(tiled_inp),
+                    backbone_dtype=backbone_dtype,
+                    trainable_dtype=trainable_dtype,
+                    return_state=True,
+                    **train_kwargs,
+                )
                 if isinstance(result, float) and math.isnan(result):
                     return
 
                 model_scores.append(float(result["score"]))
                 model_states.append(
-                        dict(
-                            fold_idx=int(fold_idx),
-                            model_idx=int(model_idx),
-                            tiled_inp=bool(tiled_inp),
-                            parts=result["state"],
-                            head_hidden=int(train_kwargs["head_hidden"]),
-                            head_depth=int(train_kwargs["head_depth"]),
-                            head_drop=float(train_kwargs["head_drop"]),
-                            num_neck=int(train_kwargs["num_neck"]),
+                    dict(
+                        fold_idx=int(fold_idx),
+                        model_idx=int(model_idx),
+                        tiled_inp=bool(tiled_inp),
+                        parts=result["state"],
+                        head_hidden=int(train_kwargs["head_hidden"]),
+                        head_depth=int(train_kwargs["head_depth"]),
+                        head_drop=float(train_kwargs["head_drop"]),
+                        num_neck=int(train_kwargs["num_neck"]),
                         img_size=None if img_size is None else int(img_size),
                         score=float(result["score"]),
                         best_score=float(result["best_score"]),
