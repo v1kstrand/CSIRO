@@ -52,9 +52,6 @@ def train_cv(
 
     sys.path.insert(0, str(dino_repo))
     wide_df = load_train_wide(str(csv), root=str(root))
-    if bool(cfg.get("tiled_inp", False)):
-        dataset = BiomassTiledCached(wide_df, img_size=int(cfg["img_size"]))
-    else:
     dataset_cache: dict[bool, Any] = {}
 
     backbone = torch.hub.load(
@@ -67,12 +64,11 @@ def train_cv(
     base_kwargs = dict(cfg)
     base_kwargs.update(
         dict(
-            dataset=dataset,
             wide_df=wide_df,
             backbone=backbone,
             device=device,
         )
-     )
+    )
     
     sweeps = sweeps or [base_kwargs]
     outputs: list[dict[str, Any]] = []
