@@ -55,6 +55,7 @@ DEFAULTS: dict[str, Any] = dict(
     swa_eval_freq=1,
     clip_val=1.0,
     n_models=1,
+    val_freq=1,
     w_std_alpha= -1.,
     smooth_l1_beta= -1.,
     tau_physics=0.0,

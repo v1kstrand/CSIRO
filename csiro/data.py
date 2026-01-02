@@ -173,6 +173,88 @@ class TiledTransformView(Dataset):
         return x, y
 
 
+class TiledTTADataset(Dataset):
+    def __init__(
+        self,
+        base: Dataset,
+        *,
+        tta_n: int = 4,
+        bcs_val: float = 0.0,
+        hue_val: float = 0.0,
+        apply_post_tfms: bool = True,
+    ):
+        self.base = base
+        self.tta_n = int(tta_n)
+        if self.tta_n <= 0:
+            raise ValueError("tta_n must be >= 1.")
+        self.apply_post_tfms = bool(apply_post_tfms)
+        self.post = post_tfms() if self.apply_post_tfms else None
+        if self.post is None:
+            raise ValueError("TiledTTADataset requires apply_post_tfms=True.")
+        self.bcs_val = float(bcs_val)
+        self.hue_val = float(hue_val)
+        self._ops = TTABatch._build_ops(self.tta_n)
+        self._jitter = (
+            T.ColorJitter(
+                brightness=self.bcs_val,
+                contrast=self.bcs_val,
+                saturation=self.bcs_val,
+                hue=self.hue_val,
+            )
+            if (self.bcs_val != 0.0 or self.hue_val != 0.0)
+            else None
+        )
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    @staticmethod
+    def _apply_op(img: Image.Image, k: int, do_hflip: bool) -> Image.Image:
+        x_t = img
+        if k == 1:
+            x_t = x_t.transpose(Image.ROTATE_90)
+        elif k == 2:
+            x_t = x_t.transpose(Image.ROTATE_180)
+        elif k == 3:
+            x_t = x_t.transpose(Image.ROTATE_270)
+        if do_hflip:
+            x_t = x_t.transpose(Image.FLIP_LEFT_RIGHT)
+        return x_t
+
+    def __getitem__(self, i: int):
+        item = self.base[i]
+        if isinstance(item, (tuple, list)) and len(item) >= 3:
+            left, right, y = item[0], item[1], item[2]
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            left, right = item[0], item[1]
+            y = None
+        else:
+            raise ValueError("TiledTTADataset expects (left, right[, y]) from base dataset.")
+
+        if torch.is_tensor(left) or torch.is_tensor(right):
+            raise ValueError("TiledTTADataset expects PIL images; apply post_tfms inside TiledTTADataset.")
+
+        outs: list[torch.Tensor] = []
+        for k, do_hflip in self._ops:
+            l = self._apply_op(left, k, do_hflip)
+            r = self._apply_op(right, k, do_hflip)
+            if self._jitter is not None:
+                jitter_fn = T.ColorJitter.get_params(
+                    self._jitter.brightness,
+                    self._jitter.contrast,
+                    self._jitter.saturation,
+                    self._jitter.hue,
+                )
+                l = jitter_fn(l)
+                r = jitter_fn(r)
+            outs.append(torch.stack([self.post(l), self.post(r)], dim=0))
+
+        x_tta = torch.stack(outs, dim=0)
+        if y is None:
+            return x_tta
+        return x_tta, y
+
+
 class TTADataset(Dataset):
     def __init__(
         self,

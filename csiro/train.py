@@ -205,6 +205,7 @@ def train_one_fold(
     tau_physics: float = 0.0,
     physics_from_log: bool = True,
     tiled_inp: bool = False,
+    val_freq: int = 1,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -281,6 +282,7 @@ def train_one_fold(
     best_opt_state = None
     patience = 0
 
+    val_freq = max(1, int(val_freq))
     p_bar = tqdm(range(1, int(epochs) + 1))
     for ep in p_bar:
         lr = cos_sin_lr(int(ep), int(epochs), float(lr_start), float(lr_final))
@@ -324,18 +326,20 @@ def train_one_fold(
             n_seen += bs
 
         train_loss = running / max(int(n_seen), 1)
-        model.set_train(False)
-        score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+        do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
+        score = None
+        if do_eval:
+            model.set_train(False)
+            score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
-            p = {
-                f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss),
-                f"x_val_wR2_cv{curr_fold}_m{model_idx}": float(score),
-            }
+            p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
+            if score is not None:
+                p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
             comet_exp.log_metrics(p, step=int(ep))
 
-        if score > best_score:
-            best_score = score
+        if score is not None and score > best_score:
+            best_score = float(score)
             patience = 0
             best_state = _save_parts(model)
             best_opt_state = copy.deepcopy(opt.state_dict())
@@ -343,10 +347,16 @@ def train_one_fold(
             patience += 1
 
         s1 = f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | lr: {lr:6.4f}"
-        s2 = (
-            f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
-            f"val_wR2={score:.4f} | {s1}"
-        )
+        if score is None:
+            s2 = (
+                f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
+                f"val_wR2=skip | {s1}"
+            )
+        else:
+            s2 = (
+                f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
+                f"val_wR2={score:.4f} | {s1}"
+            )
         if verbose:
             print(s2)
         p_bar.set_postfix_str(s2)

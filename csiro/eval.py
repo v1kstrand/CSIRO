@@ -56,6 +56,13 @@ def _normalize_runs(states: Any) -> list[list[dict[str, Any]]]:
     return [_flatten_states(states)]
 
 
+def _require_tiled_runs(runs: list[list[dict[str, Any]]]) -> None:
+    for run in runs:
+        for s in run:
+            if not bool(s.get("tiled_inp", False)):
+                raise ValueError("predict_ensemble_tiled requires tiled checkpoints (tiled_inp=True).")
+
+
 def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
     if len(xs) == 1:
         return xs[0]
@@ -297,6 +304,106 @@ def predict_ensemble(
                         preds_models.append(p)
                     else:
                         raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
+
+                p_ens = _agg_stack(preds_models, inner_agg)
+                preds.append(p_ens.detach().cpu())
+
+        return torch.cat(preds, dim=0)
+
+    if outer_agg == "flatten":
+        flat_states = [s for run in runs for s in run]
+        models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
+        return _predict_with_models(models)
+    if outer_agg in ("mean", "median"):
+        preds_runs: list[torch.Tensor] = []
+        for run in runs:
+            models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in run]
+            preds_runs.append(_predict_with_models(models))
+        return _agg_stack(preds_runs, outer_agg)
+    raise ValueError(f"Unknown outer_agg: {outer_agg}")
+
+
+@torch.no_grad()
+def predict_ensemble_tiled(
+    data,
+    states: Any,
+    backbone,
+    *,
+    batch_size: int = 128,
+    num_workers: int | None = None,
+    device: str | torch.device = "cuda",
+    backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
+    tta_agg: str = "mean",
+    inner_agg: str = "mean",
+    outer_agg: str = "mean",
+) -> torch.Tensor:
+    runs = _normalize_runs(states)
+    _require_tiled_runs(runs)
+
+    if isinstance(data, DataLoader):
+        dl = data
+    else:
+        num_workers = default_num_workers() if num_workers is None else int(num_workers)
+        tta_n = _get_tta_n(data)
+        tile_n = 2
+        if tta_n > 1 or tile_n > 1:
+            batch_size = max(1, int(batch_size) // int(tile_n * max(1, tta_n)))
+        dl = DataLoader(
+            data,
+            shuffle=False,
+            batch_size=int(batch_size),
+            pin_memory=str(device).startswith("cuda"),
+            num_workers=num_workers,
+            persistent_workers=(num_workers > 0),
+        )
+
+    if backbone_dtype is None:
+        backbone_dtype = DEFAULTS["backbone_dtype"]
+    if isinstance(backbone_dtype, str):
+        backbone_dtype = parse_dtype(backbone_dtype)
+    if trainable_dtype is None:
+        trainable_dtype = DEFAULTS["trainable_dtype"]
+    if isinstance(trainable_dtype, str):
+        trainable_dtype = parse_dtype(trainable_dtype)
+
+    outer_agg = str(outer_agg).lower()
+
+    def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
+        for model in models:
+            if hasattr(model, "set_train"):
+                model.set_train(False)
+            model.eval()
+
+        preds: list[torch.Tensor] = []
+        with torch.inference_mode(), autocast_context(device, dtype=trainable_dtype):
+            for batch in dl:
+                if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                    x = batch[0]
+                else:
+                    x = batch
+
+                if not torch.is_tensor(x):
+                    raise ValueError("predict_ensemble_tiled expects tensor batches.")
+                x = x.to(device, non_blocking=True)
+
+                preds_models: list[torch.Tensor] = []
+                for model in models:
+                    if x.ndim == 6:
+                        b, t, tiles, c, h, w = x.shape
+                        if tiles != 2:
+                            raise ValueError(f"Expected tiles=2, got {tiles}.")
+                        x_tta = x.view(b * t, tiles, c, h, w)
+                        p_log = model(x_tta).float()
+                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p = p.view(b, t, -1)
+                        preds_models.append(_agg_tta(p, tta_agg))
+                    elif x.ndim == 5:
+                        p_log = model(x).float()
+                        p = torch.expm1(p_log).clamp_min(0.0)
+                        preds_models.append(p)
+                    else:
+                        raise ValueError(f"Expected [B,2,C,H,W] or [B,T,2,C,H,W], got {tuple(x.shape)}")
 
                 p_ens = _agg_stack(preds_models, inner_agg)
                 preds.append(p_ens.detach().cpu())
