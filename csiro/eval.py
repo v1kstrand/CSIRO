@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from .amp import autocast_context
 from .config import DEFAULTS, default_num_workers, parse_dtype
-from .model import DINOv3Regressor
+from .model import DINOv3Regressor, TiledDINOv3Regressor
 from .transforms import post_tfms
 
 
@@ -124,7 +124,9 @@ def _build_model_from_state(
     device: str | torch.device,
     backbone_dtype: torch.dtype | None = None,
 ):
-    model = DINOv3Regressor(
+    use_tiled = bool(state.get("tiled_inp", False))
+    model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
+    model = model_cls(
         backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
