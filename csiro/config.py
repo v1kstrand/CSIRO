@@ -62,6 +62,7 @@ DEFAULTS: dict[str, Any] = dict(
     img_size=DEFAULT_IMG_SIZE,
     bcs_range=(0.2, 0.4),
     hue_range=(0.02, 0.08),
+    tiled_inp=False,
     backbone_dtype="fp16",
     trainable_dtype="fp16",
     save_output_dir="/notebooks/kaggle/csiro/output",

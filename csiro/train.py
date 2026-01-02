@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
 from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, DEFAULTS, parse_dtype
-from .data import TransformView
+from .data import TransformView, TiledTransformView
 from .losses import (
     PhysicsConsistencyLoss,
     WeightedMSELoss,
@@ -25,7 +25,7 @@ from .losses import (
     std_balanced_weights,
 )
 from .metrics import eval_global_wr2
-from .model import DINOv3Regressor
+from .model import DINOv3Regressor, TiledDINOv3Regressor
 from .transforms import base_train_comp, post_tfms
 from .utils import build_color_jitter_sweep
 
@@ -137,7 +137,9 @@ def _build_model_from_state(
     device: str | torch.device,
     backbone_dtype: torch.dtype | None = None,
 ):
-    model = DINOv3Regressor(
+    use_tiled = bool(state.get("tiled_inp", False))
+    model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
+    model = model_cls(
         backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
@@ -202,17 +204,20 @@ def train_one_fold(
     smooth_l1_beta: float = -1.,
     tau_physics: float = 0.0,
     physics_from_log: bool = True,
+    tiled_inp: bool = False,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
 
     num_workers = default_num_workers() if num_workers is None else int(num_workers)
-    val_bs = int(batch_size)
+    tile_n = 2 if tiled_inp else 1
+    train_bs = max(1, int(batch_size) // int(tile_n))
+    val_bs = int(train_bs)
     tta_n = _get_tta_n(ds_va_view)
     if tta_n > 1:
-        val_bs = max(1, int(batch_size) // int(tta_n))
+        val_bs = max(1, int(val_bs) // int(tta_n))
     dl_kwargs = dict(
-        batch_size=int(batch_size),
+        batch_size=int(train_bs),
         pin_memory=str(device).startswith("cuda"),
         num_workers=num_workers,
         persistent_workers=(num_workers > 0),
@@ -234,7 +239,8 @@ def train_one_fold(
     elif isinstance(trainable_dtype, str):
         trainable_dtype = parse_dtype(trainable_dtype)
 
-    model = DINOv3Regressor(
+    model_cls = TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
+    model = model_cls(
         backbone,
         hidden=int(head_hidden),
         drop=float(head_drop),
@@ -478,6 +484,7 @@ def eval_global_wr2_ensemble(
     trainable_dtype: str | torch.dtype | None = None,
     tta_agg: str = "mean",
     inner_agg: str = "mean",
+    tiled_inp: bool = False,
     comet_exp: Any | None = None,
     curr_fold: int | None = None,
 ) -> float:
@@ -509,7 +516,13 @@ def eval_global_wr2_ensemble(
 
             preds_models: list[torch.Tensor] = []
             for model in models:
-                if x.ndim == 5:
+                if tiled_inp:
+                    if x.ndim != 5:
+                        raise ValueError(f"Expected tiled batch [B,2,C,H,W], got {tuple(x.shape)}")
+                    p_log = model(x).float()
+                    p = torch.expm1(p_log).clamp_min(0.0)
+                    preds_models.append(p)
+                elif x.ndim == 5:
                     x_tta, t = _split_tta_batch(x)
                     p_log = model(x_tta).float()
                     p = torch.expm1(p_log).clamp_min(0.0)
@@ -633,13 +646,17 @@ def run_groupkfold_cv(
 
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
+    tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     jitter_tfms = build_color_jitter_sweep(
         int(n_models),
         bcs_range=tuple(bcs_range),
         hue_range=tuple(hue_range),
     )
     train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
-    ds_va_view = TransformView(dataset, post_tfms())
+    if tiled_inp:
+        ds_va_view = TiledTransformView(dataset, post_tfms())
+    else:
+        ds_va_view = TransformView(dataset, post_tfms())
 
     comet_exp = None
     if comet_exp_name is not None:
@@ -673,37 +690,42 @@ def run_groupkfold_cv(
                 break
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
-            for model_idx in range(int(n_models)):
-                train_tfms = train_tfms_list[int(model_idx)]
-                ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
-                result = train_one_fold(
-                    wide_df=wide_df,
-                    ds_tr_view=ds_tr_view,
-                    ds_va_view=ds_va_view,
-                    tr_idx=tr_idx,
+                for model_idx in range(int(n_models)):
+                    train_tfms = train_tfms_list[int(model_idx)]
+                    if tiled_inp:
+                        ds_tr_view = TiledTransformView(dataset, T.Compose([train_tfms, post_tfms()]))
+                    else:
+                        ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
+                    result = train_one_fold(
+                        wide_df=wide_df,
+                        ds_tr_view=ds_tr_view,
+                        ds_va_view=ds_va_view,
+                        tr_idx=tr_idx,
                     va_idx=va_idx,
                     fold_idx=int(fold_idx),
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
-                    model_idx=int(model_idx),
-                    backbone_dtype=backbone_dtype,
-                    trainable_dtype=trainable_dtype,
-                    return_state=True,
-                    **train_kwargs,
-                )
+                        model_idx=int(model_idx),
+                        tiled_inp=bool(tiled_inp),
+                        backbone_dtype=backbone_dtype,
+                        trainable_dtype=trainable_dtype,
+                        return_state=True,
+                        **train_kwargs,
+                    )
                 if isinstance(result, float) and math.isnan(result):
                     return
 
                 model_scores.append(float(result["score"]))
                 model_states.append(
-                    dict(
-                        fold_idx=int(fold_idx),
-                        model_idx=int(model_idx),
-                        parts=result["state"],
-                        head_hidden=int(train_kwargs["head_hidden"]),
-                        head_depth=int(train_kwargs["head_depth"]),
-                        head_drop=float(train_kwargs["head_drop"]),
-                        num_neck=int(train_kwargs["num_neck"]),
+                        dict(
+                            fold_idx=int(fold_idx),
+                            model_idx=int(model_idx),
+                            tiled_inp=bool(tiled_inp),
+                            parts=result["state"],
+                            head_hidden=int(train_kwargs["head_hidden"]),
+                            head_depth=int(train_kwargs["head_depth"]),
+                            head_drop=float(train_kwargs["head_drop"]),
+                            num_neck=int(train_kwargs["num_neck"]),
                         img_size=None if img_size is None else int(img_size),
                         score=float(result["score"]),
                         best_score=float(result["best_score"]),
@@ -719,10 +741,12 @@ def run_groupkfold_cv(
             va_subset = Subset(ds_va_view, va_idx)
             num_workers = train_kwargs.get("num_workers", None)
             num_workers = default_num_workers() if num_workers is None else int(num_workers)
+            tile_n = 2 if tiled_inp else 1
+            val_bs = max(1, int(train_kwargs["batch_size"]) // int(tile_n))
             dl_va = DataLoader(
                 va_subset,
                 shuffle=False,
-                batch_size=int(train_kwargs["batch_size"]),
+                batch_size=int(val_bs),
                 pin_memory=str(train_kwargs.get("device", "cuda")).startswith("cuda"),
                 num_workers=num_workers,
                 persistent_workers=(num_workers > 0),
@@ -745,6 +769,7 @@ def run_groupkfold_cv(
                 trainable_dtype=trainable_dtype,
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
+                tiled_inp=bool(tiled_inp),
             )
             fold_scores.append(float(fold_score))
     finally:

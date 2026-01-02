@@ -21,7 +21,7 @@ from csiro.config import (
     dino_weights_path,
     parse_dtype,
 )
-from csiro.data import BiomassBaseCached, load_train_wide
+from csiro.data import BiomassBaseCached, BiomassTiledCached, load_train_wide
 from csiro.train import run_groupkfold_cv
 
 def train_cv(
@@ -52,7 +52,10 @@ def train_cv(
 
     sys.path.insert(0, str(dino_repo))
     wide_df = load_train_wide(str(csv), root=str(root))
-    dataset = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
+    if bool(cfg.get("tiled_inp", False)):
+        dataset = BiomassTiledCached(wide_df, img_size=int(cfg["img_size"]))
+    else:
+        dataset = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
 
     backbone = torch.hub.load(
         str(dino_repo),

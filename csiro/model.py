@@ -7,6 +7,26 @@ import torch.nn as nn
 
 from .amp import autocast_context
 
+def _build_head(
+    *,
+    in_dim: int,
+    hidden: int,
+    depth: int,
+    drop: float,
+    out_dim: int,
+    norm_layer: type[nn.Module],
+) -> nn.Sequential:
+    if depth < 2:
+        raise ValueError(f"depth must be >= 2 (got {depth})")
+    layers: list[nn.Module] = []
+    d = int(in_dim)
+    for _ in range(int(depth) - 1):
+        layers += [nn.Linear(d, hidden), norm_layer(hidden), nn.GELU(), nn.Dropout(drop)]
+        d = hidden
+    layers += [nn.Linear(d, out_dim)]
+    return nn.Sequential(*layers)
+
+
 class DINOv3Regressor(nn.Module):
     def __init__(
         self,
@@ -46,16 +66,14 @@ class DINOv3Regressor(nn.Module):
         else:
             self.neck = nn.ModuleList()
 
-        if depth < 2:
-            raise ValueError(f"depth must be >= 2 (got {depth})")
-
-        layers: list[nn.Module] = []
-        in_dim = self.feat_dim
-        for _ in range(depth - 1):
-            layers += [nn.Linear(in_dim, hidden), norm_layer(hidden), nn.GELU(), nn.Dropout(drop)]
-            in_dim = hidden
-        layers += [nn.Linear(in_dim, out_dim)]
-        self.head = nn.Sequential(*layers)
+        self.head = _build_head(
+            in_dim=self.feat_dim,
+            hidden=int(hidden),
+            depth=int(depth),
+            drop=float(drop),
+            out_dim=int(out_dim),
+            norm_layer=norm_layer,
+        )
         self.norm = norm_layer(self.feat_dim)
 
     @torch.no_grad()
@@ -127,6 +145,69 @@ class DINOv3Regressor(nn.Module):
                 if getattr(m, "elementwise_affine", False):
                     nn.init.ones_(m.weight)
                     nn.init.zeros_(m.bias)
+
+
+class TiledDINOv3Regressor(DINOv3Regressor):
+    def __init__(
+        self,
+        backbone: nn.Module,
+        *,
+        hidden: int = 1024,
+        depth: int = 2,
+        drop: float = 0.1,
+        out_dim: int = 5,
+        feat_dim: int | None = None,
+        norm_layer: type[nn.Module] | None = None,
+        num_neck: int = 0,
+        neck_num_heads: int = 12,
+        backbone_dtype: torch.dtype | None = None,
+    ):
+        norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
+        super().__init__(
+            backbone,
+            hidden=int(hidden),
+            depth=int(depth),
+            drop=float(drop),
+            out_dim=int(out_dim),
+            feat_dim=feat_dim,
+            norm_layer=norm_layer,
+            num_neck=int(num_neck),
+            neck_num_heads=int(neck_num_heads),
+            backbone_dtype=backbone_dtype,
+        )
+        self.fused_dim = int(self.feat_dim) * 2
+        self.head = _build_head(
+            in_dim=self.fused_dim,
+            hidden=int(hidden),
+            depth=int(depth),
+            drop=float(drop),
+            out_dim=int(out_dim),
+            norm_layer=norm_layer,
+        )
+
+    def _tile_cls(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            with autocast_context(x.device, dtype=self.backbone_dtype):
+                tokens, rope = self._backbone_tokens(x)
+
+        for block in self.neck:
+            try:
+                tokens = block(tokens, rope)
+            except TypeError:
+                tokens = block(tokens)
+
+        cls = tokens[:, 0, :]
+        return self.norm(cls)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 5 or x.size(1) != 2:
+            raise ValueError(f"Expected tiled input [B,2,C,H,W], got {tuple(x.shape)}")
+        x_left = x[:, 0]
+        x_right = x[:, 1]
+        cls_left = self._tile_cls(x_left)
+        cls_right = self._tile_cls(x_right)
+        fused = torch.cat([cls_left, cls_right], dim=1)
+        return self.head(fused)
 
 
 def _optional_import_self_attention_block():

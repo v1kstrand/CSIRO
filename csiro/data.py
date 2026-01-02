@@ -93,6 +93,56 @@ class BiomassBaseCached(Dataset):
         return im, y
 
 
+class BiomassTiledCached(Dataset):
+    def __init__(
+        self,
+        wide_df: pd.DataFrame,
+        *,
+        targets: Sequence[str] = TARGETS,
+        img_size: int = 512,
+        cache_images: bool = True,
+    ):
+        self.df = wide_df.reset_index(drop=True)
+        y = self.df[list(targets)].values.astype(np.float32)
+        self.y_log = np.log1p(y)
+        self.targets = list(targets)
+
+        self._pre = T.Compose(
+            [
+                T.Lambda(lambda im: im.convert("RGB")),
+                T.Resize((img_size, img_size), antialias=True),
+            ]
+        )
+
+        self.cache_images = cache_images
+        self.tiles: list[tuple[Image.Image, Image.Image]] | None = [] if cache_images else None
+        if cache_images:
+            for p in self.df["abs_path"].tolist():
+                with Image.open(p) as im0:
+                    im = im0.convert("RGB")
+                    left = im.crop((0, 0, 1000, 1000))
+                    right = im.crop((1000, 0, 2000, 1000))
+                    left = self._pre(left)
+                    right = self._pre(right)
+                    self.tiles.append((left.copy(), right.copy()))
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, i: int):
+        if self.tiles is None:
+            with Image.open(self.df.loc[i, "abs_path"]) as im0:
+                im = im0.convert("RGB")
+                left = im.crop((0, 0, 1000, 1000))
+                right = im.crop((1000, 0, 2000, 1000))
+                left = self._pre(left)
+                right = self._pre(right)
+        else:
+            left, right = self.tiles[i]
+        y = torch.from_numpy(self.y_log[i])
+        return left, right, y
+
+
 class TransformView(Dataset):
     def __init__(self, base: Dataset, tfms):
         self.base = base
@@ -104,6 +154,22 @@ class TransformView(Dataset):
     def __getitem__(self, i: int):
         img, y = self.base[i]
         x = self.tfms(img)
+        return x, y
+
+
+class TiledTransformView(Dataset):
+    def __init__(self, base: Dataset, tfms):
+        self.base = base
+        self.tfms = tfms
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i: int):
+        left, right, y = self.base[i]
+        x_left = self.tfms(left)
+        x_right = self.tfms(right)
+        x = torch.stack([x_left, x_right], dim=0)
         return x, y
 
 
