@@ -55,7 +55,7 @@ def train_cv(
     if bool(cfg.get("tiled_inp", False)):
         dataset = BiomassTiledCached(wide_df, img_size=int(cfg["img_size"]))
     else:
-        dataset = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
+    dataset_cache: dict[bool, Any] = {}
 
     backbone = torch.hub.load(
         str(dino_repo),
@@ -80,6 +80,14 @@ def train_cv(
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
         kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-")[:80]
+
+        tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
+        if tiled_inp not in dataset_cache:
+            if tiled_inp:
+                dataset_cache[tiled_inp] = BiomassTiledCached(wide_df, img_size=int(cfg["img_size"]))
+            else:
+                dataset_cache[tiled_inp] = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
+        kwargs["dataset"] = dataset_cache[tiled_inp]
 
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(
