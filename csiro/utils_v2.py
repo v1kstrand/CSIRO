@@ -270,8 +270,10 @@ def search_cv_splits(
     else:
         raise ValueError(f"Unknown group_mode: {group_mode}")
 
+    from tqdm.auto import tqdm
+
     results: list[dict[str, Any]] = []
-    for seed in range(int(seed_start), int(seed_start) + int(n_trials)):
+    for seed in tqdm(range(int(seed_start), int(seed_start) + int(n_trials)), desc="cv_search"):
         gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
         splits = list(gkf.split(wide_df, groups=groups))
         ok, info = _score_split(
