@@ -158,15 +158,18 @@ class TransformView(Dataset):
 
 
 class TiledTransformView(Dataset):
-    def __init__(self, base: Dataset, tfms):
+    def __init__(self, base: Dataset, tfms, *, tile_swap: bool = False):
         self.base = base
         self.tfms = tfms
+        self.tile_swap = bool(tile_swap)
 
     def __len__(self) -> int:
         return len(self.base)
 
     def __getitem__(self, i: int):
         left, right, y = self.base[i]
+        if self.tile_swap and torch.rand(()) < 0.5:
+            left, right = right, left
         x_left = self.tfms(left)
         x_right = self.tfms(right)
         x = torch.stack([x_left, x_right], dim=0)
