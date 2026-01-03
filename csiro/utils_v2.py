@@ -5,11 +5,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+from PIL import Image
 from sklearn.model_selection import GroupKFold
 from torch.utils.data import Subset
 
 from .config import DEFAULTS
+from .data import TransformView, TiledTransformView
 from .eval import _normalize_runs, load_ensemble_states, predict_ensemble, predict_ensemble_tiled
+from .transforms import post_tfms
 
 
 def make_groups_state_quarter(df: pd.DataFrame, date_col: str = "Sampling_Date", state_col: str = "State") -> np.ndarray:
@@ -95,6 +98,28 @@ def _filter_runs_for_fold(runs: list[list[dict[str, Any]]], fold_idx: int) -> li
     return filtered
 
 
+def _ensure_tensor_dataset(dataset, *, tiled_inp: bool):
+    sample = dataset[0]
+    if isinstance(sample, (tuple, list)) and len(sample) >= 1:
+        x0 = sample[0]
+    else:
+        x0 = sample
+
+    if torch.is_tensor(x0):
+        return dataset
+
+    if tiled_inp:
+        if isinstance(sample, (tuple, list)) and len(sample) >= 3:
+            return TiledTransformView(dataset, post_tfms(), tile_swap=False)
+        raise ValueError("tiled_inp expects dataset to return (left, right, y) or tensors.")
+
+    if isinstance(sample, (tuple, list)) and len(sample) >= 2:
+        return TransformView(dataset, post_tfms())
+    if isinstance(x0, Image.Image):
+        raise ValueError("dataset returns PIL without labels; provide a labeled dataset for OOF.")
+    raise ValueError("Unsupported dataset sample format for OOF.")
+
+
 @torch.no_grad()
 def make_oof_predictions(
     *,
@@ -128,6 +153,7 @@ def make_oof_predictions(
             raise ValueError("tiled_inp does not match checkpoint states.")
 
     splits = build_cv_splits(wide_df, cv_params=cv_params)
+    dataset = _ensure_tensor_dataset(dataset, tiled_inp=bool(tiled_inp))
     fold_id = np.full(len(wide_df), -1, dtype=np.int64)
     preds_full: torch.Tensor | None = None
 
