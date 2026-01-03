@@ -98,6 +98,204 @@ def _filter_runs_for_fold(runs: list[list[dict[str, Any]]], fold_idx: int) -> li
     return filtered
 
 
+def _js_divergence(p: np.ndarray, q: np.ndarray) -> float:
+    p = np.asarray(p, dtype=np.float64)
+    q = np.asarray(q, dtype=np.float64)
+    p = p / (p.sum() + 1e-12)
+    q = q / (q.sum() + 1e-12)
+    m = 0.5 * (p + q)
+
+    def _kl(a, b):
+        a = np.clip(a, 1e-12, None)
+        b = np.clip(b, 1e-12, None)
+        return float(np.sum(a * np.log2(a / b)))
+
+    return 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
+
+
+def _season_from_month(m: float | int | None) -> str | None:
+    if m is None or (isinstance(m, float) and np.isnan(m)):
+        return None
+    m = int(m)
+    if m in (12, 1, 2):
+        return "summer"
+    if m in (3, 4, 5):
+        return "autumn"
+    if m in (6, 7, 8):
+        return "winter"
+    return "spring"
+
+
+def _score_split(
+    *,
+    wide_df: pd.DataFrame,
+    splits,
+    targets: list[str],
+    date_col: str,
+    state_col: str,
+    min_fold_n: int,
+    min_target_var: float,
+    min_states_per_fold: int | None,
+    min_seasons_per_fold: int | None,
+    n_bins: int,
+    min_bin_n: int,
+) -> tuple[bool, dict[str, Any]]:
+    n = len(wide_df)
+    fold_sizes = [len(va) for _, va in splits]
+    if min(fold_sizes) < int(min_fold_n):
+        return False, {"reject": "min_fold_n"}
+
+    y = wide_df[targets].to_numpy(dtype=np.float32)
+    overall_mean = y.mean(axis=0)
+    overall_var = y.var(axis=0)
+
+    min_var = float("inf")
+    mean_dev = []
+    var_dev = []
+    for _, va_idx in splits:
+        y_f = y[np.asarray(va_idx, dtype=np.int64)]
+        v = y_f.var(axis=0)
+        min_var = min(min_var, float(v.min()))
+        mean_dev.append(np.abs(y_f.mean(axis=0) - overall_mean) / (overall_mean + 1e-6))
+        var_dev.append(np.abs(v - overall_var) / (overall_var + 1e-6))
+
+    if min_var < float(min_target_var):
+        return False, {"reject": "min_target_var"}
+
+    # Quantile coverage
+    bins = []
+    for t_idx in range(len(targets)):
+        q = np.quantile(y[:, t_idx], np.linspace(0, 1, n_bins + 1))
+        bins.append(q)
+    for _, va_idx in splits:
+        y_f = y[np.asarray(va_idx, dtype=np.int64)]
+        for t_idx in range(len(targets)):
+            q = bins[t_idx]
+            counts, _ = np.histogram(y_f[:, t_idx], bins=q)
+            if counts.min() < int(min_bin_n):
+                return False, {"reject": "min_bin_n"}
+
+    # State/season balance scoring
+    state_score = None
+    season_score = None
+    if state_col in wide_df.columns:
+        states = wide_df[state_col].astype(str)
+        uniq = states.unique()
+        overall = states.value_counts(normalize=True).reindex(uniq).fillna(0).to_numpy()
+        js = []
+        for _, va_idx in splits:
+            vals = states.iloc[va_idx]
+            if min_states_per_fold is not None and vals.nunique() < int(min_states_per_fold):
+                return False, {"reject": "min_states_per_fold"}
+            dist = vals.value_counts(normalize=True).reindex(uniq).fillna(0).to_numpy()
+            js.append(_js_divergence(dist, overall))
+        state_score = 1.0 - float(np.mean(js))
+
+    if date_col in wide_df.columns:
+        d = pd.to_datetime(wide_df[date_col], errors="coerce")
+        seasons = d.dt.month.apply(_season_from_month)
+        uniq = seasons.dropna().unique()
+        overall = seasons.value_counts(normalize=True).reindex(uniq).fillna(0).to_numpy()
+        js = []
+        for _, va_idx in splits:
+            vals = seasons.iloc[va_idx]
+            if min_seasons_per_fold is not None and vals.nunique() < int(min_seasons_per_fold):
+                return False, {"reject": "min_seasons_per_fold"}
+            dist = vals.value_counts(normalize=True).reindex(uniq).fillna(0).to_numpy()
+            js.append(_js_divergence(dist, overall))
+        season_score = 1.0 - float(np.mean(js))
+
+    size_balance = 1.0 - float(np.std(fold_sizes) / (np.mean(fold_sizes) + 1e-6))
+    mean_balance = 1.0 - float(np.mean(np.vstack(mean_dev)))
+    var_balance = 1.0 - float(np.mean(np.vstack(var_dev)))
+
+    parts = {"size": size_balance, "mean": mean_balance, "var": var_balance}
+    if state_score is not None:
+        parts["state"] = state_score
+    if season_score is not None:
+        parts["season"] = season_score
+
+    weights = {
+        "size": 0.2,
+        "state": 0.25,
+        "season": 0.15,
+        "mean": 0.2,
+        "var": 0.2,
+    }
+    w_sum = sum(weights[k] for k in parts.keys())
+    score = sum(parts[k] * weights[k] for k in parts.keys()) / max(w_sum, 1e-6)
+
+    return True, {
+        "score": float(score),
+        "fold_sizes": fold_sizes,
+        "min_target_var": float(min_var),
+        "size_balance": float(size_balance),
+        "mean_balance": float(mean_balance),
+        "var_balance": float(var_balance),
+        "state_balance": None if state_score is None else float(state_score),
+        "season_balance": None if season_score is None else float(season_score),
+    }
+
+
+def search_cv_splits(
+    wide_df: pd.DataFrame,
+    *,
+    n_splits: int = 5,
+    n_trials: int = 200,
+    seed_start: int = 0,
+    top_k: int = 5,
+    group_mode: str = "state_quarter",
+    date_col: str = "Sampling_Date",
+    state_col: str = "State",
+    targets: list[str] | None = None,
+    min_fold_n: int | None = None,
+    min_target_var: float = 1e-3,
+    min_states_per_fold: int | None = None,
+    min_seasons_per_fold: int | None = 2,
+    n_bins: int = 4,
+    min_bin_n: int = 5,
+) -> list[dict[str, Any]]:
+    if targets is None:
+        targets = list(DEFAULTS.get("targets", [])) or []
+    if not targets:
+        targets = list(wide_df.columns.intersection(TARGETS))
+
+    if min_fold_n is None:
+        min_fold_n = max(20, int(len(wide_df) / max(int(n_splits), 1) * 0.6))
+
+    if group_mode == "state_quarter":
+        groups = make_groups_state_quarter(wide_df, date_col=date_col, state_col=state_col)
+    elif group_mode == "date":
+        groups = wide_df[date_col].astype(str).to_numpy()
+    else:
+        raise ValueError(f"Unknown group_mode: {group_mode}")
+
+    results: list[dict[str, Any]] = []
+    for seed in range(int(seed_start), int(seed_start) + int(n_trials)):
+        gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(seed))
+        splits = list(gkf.split(wide_df, groups=groups))
+        ok, info = _score_split(
+            wide_df=wide_df,
+            splits=splits,
+            targets=targets,
+            date_col=date_col,
+            state_col=state_col,
+            min_fold_n=int(min_fold_n),
+            min_target_var=float(min_target_var),
+            min_states_per_fold=min_states_per_fold,
+            min_seasons_per_fold=min_seasons_per_fold,
+            n_bins=int(n_bins),
+            min_bin_n=int(min_bin_n),
+        )
+        if not ok:
+            continue
+        info["cv_params"] = dict(mode="gkf", cv_seed=int(seed), n_splits=int(n_splits))
+        info["group_mode"] = str(group_mode)
+        results.append(info)
+
+    results.sort(key=lambda d: float(d.get("score", -1)), reverse=True)
+    return results[: int(top_k)]
+
 def _ensure_tensor_dataset(dataset, *, tiled_inp: bool):
     sample = dataset[0]
     if isinstance(sample, (tuple, list)) and len(sample) >= 1:
