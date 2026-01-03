@@ -9,7 +9,7 @@ from PIL import Image
 from sklearn.model_selection import GroupKFold
 from torch.utils.data import Subset
 
-from .config import DEFAULTS
+from .config import DEFAULTS, TARGETS
 from .data import TransformView, TiledTransformView
 from .eval import _normalize_runs, load_ensemble_states, predict_ensemble, predict_ensemble_tiled
 from .transforms import post_tfms
