@@ -703,14 +703,14 @@ def run_groupkfold_cv(
             model_states: list[dict[str, Any]] = []
             for model_idx in range(int(n_models)):
                 train_tfms = train_tfms_list[int(model_idx)]
-                    if tiled_inp:
-                        ds_tr_view = TiledTransformView(
-                            dataset,
-                            T.Compose([train_tfms, post_tfms()]),
-                            tile_swap=bool(tile_swap),
-                        )
-                    else:
-                        ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
+                if tiled_inp:
+                    ds_tr_view = TiledTransformView(
+                        dataset,
+                        T.Compose([train_tfms, post_tfms()]),
+                        tile_swap=bool(tile_swap),
+                    )
+                else:
+                    ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
                 result = train_one_fold(
                     wide_df=wide_df,
                     ds_tr_view=ds_tr_view,
