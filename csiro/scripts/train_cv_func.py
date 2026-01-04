@@ -84,7 +84,6 @@ def train_cv(
             else:
                 dataset_cache[tiled_inp] = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
         kwargs["dataset"] = dataset_cache[tiled_inp]
-        print(kwargs)
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(
             dict(

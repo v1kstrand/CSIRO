@@ -665,6 +665,9 @@ def run_groupkfold_cv(
         for k, v in train_kwargs.items():
             if isinstance(v, (int, float, str)):
                 comet_exp.log_parameter(k, v)
+            else:
+                v = str(v)[:40]
+                comet_exp.log_parameter(k, v)
 
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
