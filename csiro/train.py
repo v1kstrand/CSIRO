@@ -609,7 +609,6 @@ def run_groupkfold_cv(
     wide_df,
     backbone_dtype: str | torch.dtype | None = None,
     trainable_dtype: str | torch.dtype | None = None,
-    tfms: Callable[[], T.Compose] | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
     n_models: int = 1,
@@ -649,26 +648,7 @@ def run_groupkfold_cv(
         cv_iter = cv_iter_from_pairs(groups_pairs=groups_sq, pairs=pairs_sel, n_splits=n_splits)
     else:
         raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
-            
-
-    if tfms is not None:
-        raise ValueError("tfms is deprecated; use bcs_range/hue_range sweep instead.")
-
-    bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
-    hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
-    tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
-    tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
-    jitter_tfms = build_color_jitter_sweep(
-        int(n_models),
-        bcs_range=tuple(bcs_range),
-        hue_range=tuple(hue_range),
-    )
-    train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
-    if tiled_inp:
-        ds_va_view = TiledTransformView(dataset, post_tfms(), tile_swap=False)
-    else:
-        ds_va_view = TransformView(dataset, post_tfms())
-
+    
     comet_exp = None
     if comet_exp_name is not None:
         import comet_ml  # type: ignore
@@ -685,6 +665,22 @@ def run_groupkfold_cv(
         for k, v in train_kwargs.items():
             if isinstance(v, (int, float, str)):
                 comet_exp.log_parameter(k, v)
+
+    bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
+    hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
+    tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
+    tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
+    jitter_tfms = build_color_jitter_sweep(
+        int(n_models),
+        bcs_range=tuple(bcs_range),
+        hue_range=tuple(hue_range),
+    )
+    train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
+    if tiled_inp:
+        ds_va_view = TiledTransformView(dataset, post_tfms(), tile_swap=False)
+    else:
+        ds_va_view = TransformView(dataset, post_tfms())
+
 
     fold_scores: list[float] = []
     fold_model_scores: list[list[float]] = []
