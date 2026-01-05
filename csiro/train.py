@@ -745,6 +745,7 @@ def run_groupkfold_cv(
             if last_completed is None:
                 last_completed = len(fold_states) - 1
             start_fold = int(last_completed) + 1
+            print(f"INFO: Resuming from fold {start_fold}")
 
     def _save_cv_state(completed: bool, last_fold: int) -> None:
         if cv_state_path is None:
