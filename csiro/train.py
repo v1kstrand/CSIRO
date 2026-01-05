@@ -318,6 +318,7 @@ def train_one_fold(
     lnk_warm_up = int(lnk_cfg.get("warm_up_n", 0))
     lnk_lr_max = float(lnk_cfg.get("lr_max", 0.0))
     lnk_lr_min = float(lnk_cfg.get("lr_min", 0.0))
+    lnk_wd = float(lnk_cfg.get("wd", 0.0))
     lnk_params_list: list[torch.nn.Parameter] = []
     opt_ln = None
     lnk_active = False
@@ -326,7 +327,7 @@ def train_one_fold(
         lnk_params_list = _select_backbone_ln_params(model.backbone, lnk_k)
         if lnk_params_list:
             model.set_backbone_grad(True)
-            opt_ln = torch.optim.AdamW(lnk_params_list, lr=float(lnk_lr_max), weight_decay=0.0)
+            opt_ln = torch.optim.AdamW(lnk_params_list, lr=float(lnk_lr_max), weight_decay=float(lnk_wd))
             lnk_active = True
     
     w_loss = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)
