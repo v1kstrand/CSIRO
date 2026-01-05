@@ -45,6 +45,7 @@ class DINOv3Regressor(nn.Module):
         super().__init__()
         self.backbone = backbone
         self.backbone_dtype = backbone_dtype
+        self.backbone_grad = False
 
         feat_dim = feat_dim or getattr(getattr(backbone, "norm", None), "normalized_shape", [None])[0]
         if feat_dim is None:
@@ -114,7 +115,7 @@ class DINOv3Regressor(nn.Module):
         return tokens, rope
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.backbone_grad):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tokens, rope = self._backbone_tokens(x)
 
@@ -132,6 +133,9 @@ class DINOv3Regressor(nn.Module):
         self.neck.train(train)
         self.head.train(train)
         self.norm.train(train)
+
+    def set_backbone_grad(self, train: bool = True) -> None:
+        self.backbone_grad = bool(train)
 
     @torch.no_grad()
     def init(self) -> None:
@@ -186,7 +190,7 @@ class TiledDINOv3Regressor(DINOv3Regressor):
         )
 
     def _tile_cls(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.backbone_grad):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tokens, rope = self._backbone_tokens(x)
 

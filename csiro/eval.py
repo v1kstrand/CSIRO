@@ -124,6 +124,10 @@ def _build_model_from_state(
     device: str | torch.device,
     backbone_dtype: torch.dtype | None = None,
 ):
+    def _load_backbone_ln_state(backbone_obj, ln_state: dict[str, torch.Tensor] | None) -> None:
+        if isinstance(ln_state, dict) and ln_state:
+            backbone_obj.load_state_dict(ln_state, strict=False)
+
     use_tiled = bool(state.get("tiled_inp", False))
     model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
     model = model_cls(
@@ -142,6 +146,7 @@ def _build_model_from_state(
                 part.load_state_dict(parts[name], strict=True)
     else:
         model.load_state_dict(state, strict=False)
+    _load_backbone_ln_state(model.backbone, state.get("backbone_ln"))
     return model
 
 
@@ -222,6 +227,9 @@ def load_dinov3_regressor_from_pt(
                 part.load_state_dict(parts[name], strict=True)
     else:
         model.load_state_dict(state, strict=False)
+    ln_state = state.get("backbone_ln")
+    if isinstance(ln_state, dict) and ln_state:
+        model.backbone.load_state_dict(ln_state, strict=False)
 
     if hasattr(model, "set_train"):
         model.set_train(False)
