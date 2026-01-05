@@ -653,10 +653,6 @@ def run_groupkfold_cv(
     comet_exp = None
     if comet_exp_name is not None:
         import comet_ml  # type: ignore
-        
-        if "uid" in comet_exp_name:
-            uid = "_" + str(uuid.uuid4())[:5]
-            comet_exp_name = comet_exp_name.replace("uid", "") + uid
 
         comet_exp = comet_ml.start(
             api_key=os.getenv("COMET_API_KEY"),

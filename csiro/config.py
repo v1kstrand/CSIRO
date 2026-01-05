@@ -34,7 +34,7 @@ DEFAULT_PLUS: str = ""
     
 DEFAULTS: dict[str, Any] = dict(
     cv_params=dict(mode="gkf", cv_seed=0, n_splits=5, max_folds=None),
-    cv_resume=False,
+    cv_resume=True,
     max_folds=None,
     device="cuda",
     verbose=False,
@@ -62,7 +62,7 @@ DEFAULTS: dict[str, Any] = dict(
     img_size=DEFAULT_IMG_SIZE,
     bcs_range=(0.2, 0.4),
     hue_range=(0.02, 0.08),
-    tiled_inp=False,
+    tiled_inp=True,
     tile_swap=False,
     lnk_params=dict(k=0, warm_up_n=0, lr_max=1e-5, lr_min=1e-7, wd=0.0),
     backbone_dtype="fp16",
