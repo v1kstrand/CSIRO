@@ -61,6 +61,7 @@ def train_cv(
     wide_df = load_train_wide(str(csv), root=str(root))
     dataset_cache: dict[bool, Any] = {}
 
+    print("INFO: model_size:", model_size)
     backbone = torch.hub.load(
         str(dino_repo),
         dino_hub_name(model_size=str(model_size), plus=str(plus)),
