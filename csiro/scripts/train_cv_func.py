@@ -50,34 +50,20 @@ def train_cv(
 
     if csv is None:
         csv = os.path.join(root, "train.csv")
-    if model_size is None:
-        model_size = str(cfg.get("backbone_size", DEFAULT_MODEL_SIZE))
-    if dino_weights is None:
-        dino_weights = dino_weights_path_from_size(str(cfg.get("backbone_size", DEFAULT_BACKBONE_SIZE)))
-    if dino_weights is None:
-        dino_weights = dino_weights_path(repo_dir=dino_repo, model_size=model_size, plus=plus)
 
     sys.path.insert(0, str(dino_repo))
     wide_df = load_train_wide(str(csv), root=str(root))
     dataset_cache: dict[bool, Any] = {}
-
-    print("INFO: model_size:", model_size)
-    backbone = torch.hub.load(
-        str(dino_repo),
-        dino_hub_name(model_size=str(model_size), plus=str(plus)),
-        source="local",
-        weights=str(dino_weights),
-    )
+    backbone_cache: dict[tuple[str, str, str], Any] = {}
 
     base_kwargs = dict(cfg)
     base_kwargs.update(
         dict(
             wide_df=wide_df,
-            backbone=backbone,
             device=device,
         )
     )
-    
+
     sweeps = sweeps or [base_kwargs]
     outputs: list[dict[str, Any]] = []
     for sweep in sweeps:
@@ -89,6 +75,30 @@ def train_cv(
         name_src.pop("cv_resume", None)
         kwargs["config_name"] = "".join(c for c in str(name_src) if c.isalnum() or c in "_-")[:80]
 
+        sweep_model_size = str(
+            kwargs.get("backbone_size", model_size or cfg.get("backbone_size", DEFAULT_MODEL_SIZE))
+        )
+        sweep_dino_weights = dino_weights
+        if sweep_dino_weights is None:
+            sweep_dino_weights = dino_weights_path_from_size(
+                str(kwargs.get("backbone_size", DEFAULT_BACKBONE_SIZE))
+            )
+        if sweep_dino_weights is None:
+            sweep_dino_weights = dino_weights_path(
+                repo_dir=dino_repo, model_size=sweep_model_size, plus=plus
+            )
+
+        cache_key = (str(sweep_model_size), str(sweep_dino_weights), str(plus))
+        if cache_key not in backbone_cache:
+            print("INFO: model_size:", sweep_model_size)
+            backbone_cache[cache_key] = torch.hub.load(
+                str(dino_repo),
+                dino_hub_name(model_size=str(sweep_model_size), plus=str(plus)),
+                source="local",
+                weights=str(sweep_dino_weights),
+            )
+
+        kwargs["backbone"] = backbone_cache[cache_key]
         tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
         if tiled_inp not in dataset_cache:
             if tiled_inp:
