@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, DEFAULTS, parse_dtype
+from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, DEFAULTS, parse_dtype, neck_num_heads_for
 from .data import TransformView, TiledTransformView
 from .ensemble_utils import (
     _agg_stack,
@@ -144,12 +144,15 @@ def _build_model_from_state(
 ):
     use_tiled = bool(state.get("tiled_inp", False))
     model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
+    backbone_size = str(state.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
+    neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
     model = model_cls(
         backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
         depth=int(state["head_depth"]),
         num_neck=int(state["num_neck"]),
+        neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
     ).to(device)
     _load_parts(model, state["parts"])
@@ -192,6 +195,7 @@ def train_one_fold(
     head_depth: int = 2,
     head_drop: float = 0.1,
     num_neck: int = 0,
+    neck_num_heads: int | None = None,
     num_workers: int | None = None,
     backbone_dtype: str | torch.dtype | None = None,
     trainable_dtype: str | torch.dtype | None = None,
@@ -211,6 +215,7 @@ def train_one_fold(
     tiled_inp: bool = False,
     val_freq: int = 1,
     lnk_params: dict[str, Any] | None = None,
+    backbone_size: str | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -240,6 +245,11 @@ def train_one_fold(
     elif isinstance(trainable_dtype, str):
         trainable_dtype = parse_dtype(trainable_dtype)
 
+    if backbone_size is None:
+        backbone_size = str(DEFAULTS.get("backbone_size", "b"))
+    if neck_num_heads is None:
+        neck_num_heads = int(DEFAULTS.get("neck_num_heads", neck_num_heads_for(backbone_size)))
+
     model_cls = TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
     model = model_cls(
         backbone,
@@ -247,6 +257,7 @@ def train_one_fold(
         drop=float(head_drop),
         depth=int(head_depth),
         num_neck=int(num_neck),
+        neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
     ).to(device)
     model.init()
@@ -695,6 +706,7 @@ def run_groupkfold_cv(
         head_depth=int(train_kwargs.get("head_depth", DEFAULTS["head_depth"])),
         head_drop=float(train_kwargs.get("head_drop", DEFAULTS["head_drop"])),
         num_neck=int(train_kwargs.get("num_neck", DEFAULTS["num_neck"])),
+        neck_num_heads=int(train_kwargs.get("neck_num_heads", DEFAULTS.get("neck_num_heads", 12))),
         img_size=None if img_size is None else int(img_size),
         bcs_range=tuple(bcs_range),
         hue_range=tuple(hue_range),
@@ -713,6 +725,7 @@ def run_groupkfold_cv(
         clip_val=train_kwargs.get("clip_val", DEFAULTS["clip_val"]),
         backbone_dtype=train_kwargs.get("backbone_dtype", DEFAULTS["backbone_dtype"]),
         trainable_dtype=train_kwargs.get("trainable_dtype", DEFAULTS["trainable_dtype"]),
+        backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
         tau_physics=float(train_kwargs.get("tau_physics", DEFAULTS["tau_physics"])),
         physics_from_log=bool(train_kwargs.get("physics_from_log", DEFAULTS.get("physics_from_log", True))),
         val_freq=int(train_kwargs.get("val_freq", DEFAULTS["val_freq"])),
@@ -798,6 +811,8 @@ def run_groupkfold_cv(
                     tiled_inp=bool(tiled_inp),
                     backbone_dtype=backbone_dtype,
                     trainable_dtype=trainable_dtype,
+                    neck_num_heads=train_kwargs.get("neck_num_heads", DEFAULTS.get("neck_num_heads", 12)),
+                    backbone_size=train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")),
                     return_state=True,
                     **train_kwargs,
                 )
@@ -810,15 +825,17 @@ def run_groupkfold_cv(
                         fold_idx=int(fold_idx),
                         model_idx=int(model_idx),
                         tiled_inp=bool(tiled_inp),
+                        backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
                         backbone_ln=result.get("backbone_ln"),
                         lnk_k=int(result.get("lnk_k", 0)),
                         head_hidden=int(train_kwargs["head_hidden"]),
                         head_depth=int(train_kwargs["head_depth"]),
                         head_drop=float(train_kwargs["head_drop"]),
-                        num_neck=int(train_kwargs["num_neck"]),
-                        img_size=None if img_size is None else int(img_size),
-                        score=float(result["score"]),
+                    num_neck=int(train_kwargs["num_neck"]),
+                    neck_num_heads=int(train_kwargs.get("neck_num_heads", DEFAULTS.get("neck_num_heads", 12))),
+                    img_size=None if img_size is None else int(img_size),
+                    score=float(result["score"]),
                         best_score=float(result["best_score"]),
                         swa_score=result["swa_score"],
                         best_state=result["best_state"],

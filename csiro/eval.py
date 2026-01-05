@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .amp import autocast_context
-from .config import DEFAULTS, default_num_workers, parse_dtype
+from .config import DEFAULTS, default_num_workers, parse_dtype, neck_num_heads_for
 from .ensemble_utils import (
     _agg_stack,
     _agg_tta,
@@ -82,12 +82,15 @@ def _build_model_from_state(
 
     use_tiled = bool(state.get("tiled_inp", False))
     model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
+    backbone_size = str(state.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
+    neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
     model = model_cls(
         backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
         depth=int(state["head_depth"]),
         num_neck=int(state["num_neck"]),
+        neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
     ).to(device)
     parts = state.get("parts")
@@ -161,6 +164,8 @@ def load_dinov3_regressor_from_pt(
         backbone_dtype = DEFAULTS["backbone_dtype"]
     if isinstance(backbone_dtype, str):
         backbone_dtype = parse_dtype(backbone_dtype)
+    backbone_size = str(state.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
+    neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
 
     model = DINOv3Regressor(
         backbone,
@@ -168,6 +173,7 @@ def load_dinov3_regressor_from_pt(
         drop=float(_require(state, "head_drop")),
         depth=int(_require(state, "head_depth")),
         num_neck=int(_require(state, "num_neck")),
+        neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
     ).to(device)
 

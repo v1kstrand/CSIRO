@@ -29,8 +29,30 @@ DEFAULT_DINO_REPO_DIR: str = os.getenv("DEFAULT_DINO_REPO_DIR")
 DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
 DINO_WEIGHTS_PATH: str | None = os.getenv("DINO_WEIGHTS_PATH")
 
-DEFAULT_MODEL_SIZE: str = "b"
+DINO_B_WEIGHTS_PATH: str | None = os.getenv("DINO_B_WEIGHTS_PATH")
+DINO_L_WEIGHTS_PATH: str | None = os.getenv("DINO_L_WEIGHTS_PATH")
+
+DEFAULT_BACKBONE_SIZE: str = "b"
+DEFAULT_MODEL_SIZE: str = DEFAULT_BACKBONE_SIZE
 DEFAULT_PLUS: str = ""
+
+
+def dino_weights_path_from_size(backbone_size: str) -> str | None:
+    s = str(backbone_size).strip().lower()
+    if s == "b":
+        return DINO_B_WEIGHTS_PATH or DINO_WEIGHTS_PATH
+    if s == "l":
+        return DINO_L_WEIGHTS_PATH or DINO_WEIGHTS_PATH
+    raise ValueError(f"Unknown backbone_size: {backbone_size}")
+
+
+def neck_num_heads_for(backbone_size: str) -> int:
+    s = str(backbone_size).strip().lower()
+    if s == "b":
+        return 12
+    if s == "l":
+        return 16
+    raise ValueError(f"Unknown backbone_size: {backbone_size}")
     
 DEFAULTS: dict[str, Any] = dict(
     cv_params=dict(mode="gkf", cv_seed=0, n_splits=5, max_folds=None),
@@ -44,10 +66,12 @@ DEFAULTS: dict[str, Any] = dict(
     lr_start=3e-4,
     lr_final=1e-7,
     early_stopping=10,
+    backbone_size=DEFAULT_BACKBONE_SIZE,
     head_hidden=2048,
     head_drop=0.1,
     head_depth=4,
     num_neck=1,
+    neck_num_heads=neck_num_heads_for(DEFAULT_BACKBONE_SIZE),
     swa_epochs=10,
     swa_lr_start=None,
     swa_lr_final=None,

@@ -13,12 +13,15 @@ sys.path.insert(0, str(_REPO_ROOT))
 from csiro.config import (
     DEFAULT_DATA_ROOT,
     DEFAULT_DINO_REPO_DIR,
+    DEFAULT_BACKBONE_SIZE,
     DEFAULT_MODEL_SIZE,
     DEFAULT_PLUS,
     DEFAULTS,
     DINO_WEIGHTS_PATH,
     dino_hub_name,
     dino_weights_path,
+    dino_weights_path_from_size,
+    neck_num_heads_for,
     parse_dtype,
 )
 from csiro.data import BiomassBaseCached, BiomassTiledCached, load_train_wide
@@ -30,7 +33,7 @@ def train_cv(
     root: str = DEFAULT_DATA_ROOT,
     dino_repo: str = DEFAULT_DINO_REPO_DIR,
     dino_weights: str | None = None,
-    model_size: str = DEFAULT_MODEL_SIZE,  # "b" == ViT-Base
+    model_size: str | None = None,  # "b" == ViT-Base
     plus: str = DEFAULT_PLUS,
     overrides: dict[str, Any] | None = None,
     sweeps: dict = None
@@ -39,14 +42,18 @@ def train_cv(
     cfg: dict[str, Any] = dict(DEFAULTS)
     if overrides:
         cfg.update(overrides)
+    if overrides is None or "neck_num_heads" not in overrides:
+        cfg["neck_num_heads"] = neck_num_heads_for(cfg.get("backbone_size", DEFAULT_BACKBONE_SIZE))
     device = str(cfg.get("device", "cuda"))
     if device.startswith("cuda") and not torch.cuda.is_available():
         device = "cpu"
 
     if csv is None:
         csv = os.path.join(root, "train.csv")
+    if model_size is None:
+        model_size = str(cfg.get("backbone_size", DEFAULT_MODEL_SIZE))
     if dino_weights is None:
-        dino_weights = DINO_WEIGHTS_PATH
+        dino_weights = dino_weights_path_from_size(str(cfg.get("backbone_size", DEFAULT_BACKBONE_SIZE)))
     if dino_weights is None:
         dino_weights = dino_weights_path(repo_dir=dino_repo, model_size=model_size, plus=plus)
 
@@ -75,6 +82,8 @@ def train_cv(
     for sweep in sweeps:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
+        if "backbone_size" in kwargs and "neck_num_heads" not in kwargs:
+            kwargs["neck_num_heads"] = neck_num_heads_for(kwargs["backbone_size"])
         name_src = dict(sweep)
         name_src.pop("cv_resume", None)
         kwargs["config_name"] = "".join(c for c in str(name_src) if c.isalnum() or c in "_-")[:80]
