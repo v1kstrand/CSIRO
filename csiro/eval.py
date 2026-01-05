@@ -9,6 +9,13 @@ from torch.utils.data import DataLoader
 
 from .amp import autocast_context
 from .config import DEFAULTS, default_num_workers, parse_dtype
+from .ensemble_utils import (
+    _agg_stack,
+    _agg_tta,
+    _ensure_tensor_batch,
+    _get_tta_n,
+    _split_tta_batch,
+)
 from .model import DINOv3Regressor, TiledDINOv3Regressor
 from .transforms import post_tfms
 
@@ -61,61 +68,6 @@ def _require_tiled_runs(runs: list[list[dict[str, Any]]]) -> None:
         for s in run:
             if not bool(s.get("tiled_inp", False)):
                 raise ValueError("predict_ensemble_tiled requires tiled checkpoints (tiled_inp=True).")
-
-
-def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
-    if len(xs) == 1:
-        return xs[0]
-    agg = str(agg).lower()
-    stacked = torch.stack(xs, dim=0)
-    if agg == "mean":
-        return stacked.mean(dim=0)
-    if agg == "median":
-        return stacked.median(dim=0).values
-    raise ValueError(f"Unknown aggregation: {agg}")
-
-
-def _agg_tta(p: torch.Tensor, agg: str) -> torch.Tensor:
-    agg = str(agg).lower()
-    if agg == "mean":
-        return p.mean(dim=1)
-    if agg == "median":
-        return p.median(dim=1).values
-    raise ValueError(f"Unknown aggregation: {agg}")
-
-
-def _split_tta_batch(x: torch.Tensor) -> tuple[torch.Tensor, int]:
-    if x.ndim != 5:
-        raise ValueError(f"Expected batched TTA [B,T,C,H,W], got {tuple(x.shape)}")
-    b, t, c, h, w = x.shape
-    return x.view(b * t, c, h, w), int(t)
-
-
-def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
-    if torch.is_tensor(x):
-        return x
-    if isinstance(x, (tuple, list)):
-        xs = [xi if torch.is_tensor(xi) else tfms(xi) for xi in x]
-        return torch.stack(xs, dim=0)
-    return tfms(x).unsqueeze(0)
-
-
-def _get_tta_n(data) -> int:
-    obj = data
-    for _ in range(4):
-        if hasattr(obj, "tta_n"):
-            try:
-                return int(getattr(obj, "tta_n"))
-            except Exception:
-                return 1
-        if hasattr(obj, "dataset"):
-            obj = getattr(obj, "dataset")
-            continue
-        if hasattr(obj, "base"):
-            obj = getattr(obj, "base")
-            continue
-        break
-    return 1
 
 
 def _build_model_from_state(

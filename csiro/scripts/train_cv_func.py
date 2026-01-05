@@ -75,7 +75,9 @@ def train_cv(
     for sweep in sweeps:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
-        kwargs["config_name"] = "".join(c for c in str(sweep) if c.isalnum() or c in "_-")[:80]
+        name_src = dict(sweep)
+        name_src.pop("cv_resume", None)
+        kwargs["config_name"] = "".join(c for c in str(name_src) if c.isalnum() or c in "_-")[:80]
 
         tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
         if tiled_inp not in dataset_cache:

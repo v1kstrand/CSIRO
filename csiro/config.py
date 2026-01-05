@@ -34,6 +34,7 @@ DEFAULT_PLUS: str = ""
     
 DEFAULTS: dict[str, Any] = dict(
     cv_params=dict(mode="gkf", cv_seed=0, n_splits=5, max_folds=None),
+    cv_resume=False,
     max_folds=None,
     device="cuda",
     verbose=False,
@@ -56,8 +57,6 @@ DEFAULTS: dict[str, Any] = dict(
     clip_val=1.0,
     n_models=1,
     val_freq=1,
-    w_std_alpha= -1.,
-    smooth_l1_beta= -1.,
     tau_physics=0.0,
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,
@@ -68,8 +67,7 @@ DEFAULTS: dict[str, Any] = dict(
     lnk_params=dict(k=0, warm_up_n=0, lr_max=1e-5, lr_min=1e-7, wd=0.0),
     backbone_dtype="fp16",
     trainable_dtype="fp16",
-    save_output_dir="/notebooks/kaggle/csiro/output",
-    plot_imgs=False
+    save_output_dir="/notebooks/kaggle/csiro/output"
 )
 
 def default_num_workers(reserve: int = 2) -> int:

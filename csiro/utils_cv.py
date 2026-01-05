@@ -23,29 +23,6 @@ def make_groups_state_quarter(df: pd.DataFrame, date_col: str = "Sampling_Date",
     return (df[state_col].astype(str) + "_" + quarter).to_numpy()
 
 
-def fold_id_from_pairs(groups: np.ndarray, pairs) -> np.ndarray:
-    groups = np.asarray(groups)
-    uniq_groups = np.asarray(pd.unique(groups))
-    fold_id = np.full(groups.shape[0], -1, dtype=np.int64)
-    for f, (i, j) in enumerate(pairs):
-        gi = uniq_groups[int(i)]
-        gj = uniq_groups[int(j)]
-        mask = (groups == gi) | (groups == gj)
-        fold_id[mask] = f
-    if (fold_id < 0).any():
-        missing = np.unique(groups[fold_id < 0])
-        raise ValueError(f"Unassigned samples. Missing groups: {missing[:10]}")
-    return fold_id
-
-
-def cv_iter_from_pairs(groups_pairs: np.ndarray, pairs, n_splits: int):
-    fold_id = fold_id_from_pairs(groups_pairs, pairs)
-    for f in range(int(n_splits)):
-        va_idx = np.where(fold_id == f)[0]
-        tr_idx = np.where(fold_id != f)[0]
-        yield tr_idx, va_idx
-
-
 def build_cv_splits(wide_df: pd.DataFrame, cv_params: dict[str, Any] | None = None):
     if cv_params is None:
         cv_params = DEFAULTS.get("cv_params")
@@ -63,12 +40,6 @@ def build_cv_splits(wide_df: pd.DataFrame, cv_params: dict[str, Any] | None = No
         gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
         groups = wide_df["Sampling_Date"].values
         return list(gkf.split(wide_df, groups=groups))
-    if mode == "pairs":
-        if "pairs" not in cv_params:
-            raise ValueError("cv_params must include 'pairs' for mode='pairs'.")
-        pairs_sel = cv_params["pairs"]
-        groups_sq = make_groups_state_quarter(wide_df, "Sampling_Date", "State")
-        return list(cv_iter_from_pairs(groups_pairs=groups_sq, pairs=pairs_sel, n_splits=n_splits))
     raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
 
 
@@ -162,7 +133,6 @@ def _score_split(
     if min_var < float(min_target_var):
         return False, {"reject": "min_target_var"}
 
-    # Quantile coverage
     bins = []
     for t_idx in range(len(targets)):
         q = np.quantile(y[:, t_idx], np.linspace(0, 1, n_bins + 1))
@@ -175,7 +145,6 @@ def _score_split(
             if counts.min() < int(min_bin_n):
                 return False, {"reject": "min_bin_n"}
 
-    # State/season balance scoring
     state_score = None
     season_score = None
     if state_col in wide_df.columns:
@@ -297,6 +266,7 @@ def search_cv_splits(
 
     results.sort(key=lambda d: float(d.get("score", -1)), reverse=True)
     return results[: int(top_k)]
+
 
 def _ensure_tensor_dataset(dataset, *, tiled_inp: bool):
     sample = dataset[0]

@@ -7,7 +7,6 @@ from typing import Any, Callable
 import uuid
 
 import numpy as np
-import pandas as pd
 import torch
 import torchvision.transforms as T
 from sklearn.model_selection import GroupKFold
@@ -16,13 +15,18 @@ from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, TARGETS, DEFAULTS, parse_dtype
+from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, DEFAULTS, parse_dtype
 from .data import TransformView, TiledTransformView
+from .ensemble_utils import (
+    _agg_stack,
+    _agg_tta,
+    _ensure_tensor_batch,
+    _get_tta_n,
+    _split_tta_batch,
+)
 from .losses import (
     PhysicsConsistencyLoss,
     WeightedMSELoss,
-    WeightedSmoothL1Loss,
-    std_balanced_weights,
 )
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor, TiledDINOv3Regressor
@@ -74,34 +78,6 @@ def _load_parts(m: torch.nn.Module, state: dict[str, dict[str, torch.Tensor]]) -
         part = getattr(m, name, None)
         if part is not None and name in state:
             part.load_state_dict(state[name], strict=True)
-
-
-def _agg_stack(xs: list[torch.Tensor], agg: str) -> torch.Tensor:
-    if len(xs) == 1:
-        return xs[0]
-    agg = str(agg).lower()
-    stacked = torch.stack(xs, dim=0)
-    if agg == "mean":
-        return stacked.mean(dim=0)
-    if agg == "median":
-        return stacked.median(dim=0).values
-    raise ValueError(f"Unknown aggregation: {agg}")
-
-
-def _agg_tta(p: torch.Tensor, agg: str) -> torch.Tensor:
-    agg = str(agg).lower()
-    if agg == "mean":
-        return p.mean(dim=1)
-    if agg == "median":
-        return p.median(dim=1).values
-    raise ValueError(f"Unknown aggregation: {agg}")
-
-
-def _split_tta_batch(x: torch.Tensor) -> tuple[torch.Tensor, int]:
-    if x.ndim != 5:
-        raise ValueError(f"Expected batched TTA [B,T,C,H,W], got {tuple(x.shape)}")
-    b, t, c, h, w = x.shape
-    return x.view(b * t, c, h, w), int(t)
 
 
 def _select_backbone_ln_params(backbone, k: int) -> list[torch.nn.Parameter]:
@@ -160,33 +136,6 @@ def _lnk_lr_step(
     return lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * t))
 
 
-def _ensure_tensor_batch(x, tfms) -> torch.Tensor:
-    if torch.is_tensor(x):
-        return x
-    if isinstance(x, (tuple, list)):
-        xs = [xi if torch.is_tensor(xi) else tfms(xi) for xi in x]
-        return torch.stack(xs, dim=0)
-    return tfms(x).unsqueeze(0)
-
-
-def _get_tta_n(data) -> int:
-    obj = data
-    for _ in range(4):
-        if hasattr(obj, "tta_n"):
-            try:
-                return int(getattr(obj, "tta_n"))
-            except Exception:
-                return 1
-        if hasattr(obj, "dataset"):
-            obj = getattr(obj, "dataset")
-            continue
-        if hasattr(obj, "base"):
-            obj = getattr(obj, "base")
-            continue
-        break
-    return 1
-
-
 def _build_model_from_state(
     backbone,
     state: dict[str, Any],
@@ -238,7 +187,6 @@ def train_one_fold(
     device: str = "cuda",
     save_path: str | None = None,
     verbose: bool = False,
-    plot_imgs: bool = False,
     early_stopping: int = 6,
     head_hidden: int = 1024,
     head_depth: int = 2,
@@ -258,9 +206,6 @@ def train_one_fold(
     swa_eval_freq: int = 2,
     model_idx: int = 0,
     return_state: bool = False,
-    wide_df = None,
-    w_std_alpha: float = -1.,
-    smooth_l1_beta: float = -1.,
     tau_physics: float = 0.0,
     physics_from_log: bool = True,
     tiled_inp: bool = False,
@@ -285,11 +230,6 @@ def train_one_fold(
     )
     dl_tr = DataLoader(tr_subset, shuffle=True, **dl_kwargs)
     dl_va = DataLoader(va_subset, shuffle=False, **{**dl_kwargs, "batch_size": int(val_bs)})
-
-    if plot_imgs:
-        from .viz import show_nxn_grid
-        show_nxn_grid(dataloader=dl_tr, n=4)
-        return float("nan")
 
     if backbone_dtype is None:
         backbone_dtype = parse_dtype(DEFAULTS["backbone_dtype"])
@@ -332,20 +272,7 @@ def train_one_fold(
     
     w_loss = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)
     eval_w = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
-    if w_std_alpha >= 0:
-        if wide_df is None:
-            raise ValueError("wide_df is required when w_std_alpha >= 0.")
-        y_tr = wide_df.iloc[tr_idx][TARGETS].to_numpy(dtype=np.float32)
-        y_tr_t = torch.from_numpy(y_tr)                                       # float32 CPU
-        y_tr_log = torch.log1p(y_tr_t)                                        # [N_tr, 5]
-
-        std_t = y_tr_log.std(dim=0, unbiased=False)
-        w_loss = std_balanced_weights(w_loss, std_t, alpha=float(w_std_alpha))
-    
-    if smooth_l1_beta < 0:
-        criterion = WeightedMSELoss(weights=w_loss).to(device)
-    else:
-        criterion = WeightedSmoothL1Loss(weights=w_loss, beta=float(smooth_l1_beta)).to(device)
+    criterion = WeightedMSELoss(weights=w_loss).to(device)
     phys_criterion = PhysicsConsistencyLoss(
         tau_physics=float(tau_physics),
         from_log=bool(physics_from_log),
@@ -682,40 +609,6 @@ def eval_global_wr2_ensemble(
 
 
 
-def fold_id_from_pairs(groups: np.ndarray, pairs) -> np.ndarray:
-    groups = np.asarray(groups)
-    uniq_groups = np.asarray(pd.unique(groups))  # index -> label mapping used by pairs
-
-    fold_id = np.full(groups.shape[0], -1, dtype=np.int64)
-
-    for f, (i, j) in enumerate(pairs):
-        gi = uniq_groups[int(i)]
-        gj = uniq_groups[int(j)]
-        mask = (groups == gi) | (groups == gj)
-        fold_id[mask] = f
-
-    if (fold_id < 0).any():
-        missing = np.unique(groups[fold_id < 0])
-        raise ValueError(f"Unassigned samples. Missing groups: {missing[:10]}")
-    return fold_id
-
-
-def cv_iter_from_pairs(groups_pairs: np.ndarray, pairs, n_splits: int):
-    fold_id = fold_id_from_pairs(groups_pairs, pairs)
-    for f in range(int(n_splits)):
-        va_idx = np.where(fold_id == f)[0]
-        tr_idx = np.where(fold_id != f)[0]
-        yield tr_idx, va_idx
-
-
-def make_groups_state_quarter(df, date_col="Sampling_Date", state_col="State"):
-    d = df[date_col]
-    if not pd.api.types.is_datetime64_any_dtype(d):
-        d = pd.to_datetime(d, errors="raise")
-    quarter = d.dt.to_period("Q").astype(str)
-    return (df[state_col].astype(str) + "_" + quarter).to_numpy()
-
-
 def run_groupkfold_cv(
     *,
     dataset,
@@ -744,6 +637,7 @@ def run_groupkfold_cv(
     if max_folds is None:
         max_folds = cv_params.get("max_folds", DEFAULTS.get("max_folds", None))
     max_folds = None if max_folds is None else int(max_folds)
+    cv_resume = bool(train_kwargs.pop("cv_resume", DEFAULTS.get("cv_resume", False)))
     cv_seed: int | None = None
 
     if split_mode == "gkf":
@@ -753,12 +647,6 @@ def run_groupkfold_cv(
         gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
         groups = wide_df["Sampling_Date"].values
         cv_iter = gkf.split(wide_df, groups=groups)
-    elif split_mode == "pairs":
-        if "pairs" not in cv_params:
-            raise ValueError("cv_params must include 'pairs' for mode='pairs'.")
-        pairs_sel = cv_params["pairs"]
-        groups_sq = make_groups_state_quarter(wide_df, "Sampling_Date", "State")
-        cv_iter = cv_iter_from_pairs(groups_pairs=groups_sq, pairs=pairs_sel, n_splits=n_splits)
     else:
         raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
     
@@ -779,8 +667,7 @@ def run_groupkfold_cv(
             if isinstance(v, (int, float, str)):
                 comet_exp.log_parameter(k, v)
             else:
-                v = str(v)[:40]
-                comet_exp.log_parameter(k, v)
+                comet_exp.log_parameter(k, str(v)[:40])
 
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
@@ -798,9 +685,86 @@ def run_groupkfold_cv(
         ds_va_view = TransformView(dataset, post_tfms())
 
 
+
+    lnk_sig = train_kwargs.get("lnk_params", DEFAULTS.get("lnk_params", {}))
+    if isinstance(lnk_sig, dict):
+        lnk_sig = dict(lnk_sig)
+
+    run_signature = dict(
+        cv_params=dict(cv_params),
+        n_models=int(n_models),
+        tiled_inp=bool(tiled_inp),
+        tile_swap=bool(tile_swap),
+        head_hidden=int(train_kwargs.get("head_hidden", DEFAULTS["head_hidden"])),
+        head_depth=int(train_kwargs.get("head_depth", DEFAULTS["head_depth"])),
+        head_drop=float(train_kwargs.get("head_drop", DEFAULTS["head_drop"])),
+        num_neck=int(train_kwargs.get("num_neck", DEFAULTS["num_neck"])),
+        img_size=None if img_size is None else int(img_size),
+        bcs_range=tuple(bcs_range),
+        hue_range=tuple(hue_range),
+        epochs=int(train_kwargs.get("epochs", DEFAULTS["epochs"])),
+        batch_size=int(train_kwargs.get("batch_size", DEFAULTS["batch_size"])),
+        lr_start=float(train_kwargs.get("lr_start", DEFAULTS["lr_start"])),
+        lr_final=float(train_kwargs.get("lr_final", DEFAULTS["lr_final"])),
+        wd=float(train_kwargs.get("wd", DEFAULTS["wd"])),
+        early_stopping=int(train_kwargs.get("early_stopping", DEFAULTS["early_stopping"])),
+        swa_epochs=int(train_kwargs.get("swa_epochs", DEFAULTS["swa_epochs"])),
+        swa_lr_start=train_kwargs.get("swa_lr_start", DEFAULTS["swa_lr_start"]),
+        swa_lr_final=train_kwargs.get("swa_lr_final", DEFAULTS["swa_lr_final"]),
+        swa_anneal_epochs=int(train_kwargs.get("swa_anneal_epochs", DEFAULTS["swa_anneal_epochs"])),
+        swa_load_best=bool(train_kwargs.get("swa_load_best", DEFAULTS["swa_load_best"])),
+        swa_eval_freq=int(train_kwargs.get("swa_eval_freq", DEFAULTS["swa_eval_freq"])),
+        clip_val=train_kwargs.get("clip_val", DEFAULTS["clip_val"]),
+        backbone_dtype=train_kwargs.get("backbone_dtype", DEFAULTS["backbone_dtype"]),
+        trainable_dtype=train_kwargs.get("trainable_dtype", DEFAULTS["trainable_dtype"]),
+        tau_physics=float(train_kwargs.get("tau_physics", DEFAULTS["tau_physics"])),
+        physics_from_log=bool(train_kwargs.get("physics_from_log", DEFAULTS.get("physics_from_log", True))),
+        val_freq=int(train_kwargs.get("val_freq", DEFAULTS["val_freq"])),
+        lnk_params=lnk_sig,
+    )
+
+    cv_state_path = None
+    if save_output_dir is not None:
+        cv_state_path = os.path.join(save_output_dir, f"{config_name}_cv_state.pt")
+
     fold_scores: list[float] = []
     fold_model_scores: list[list[float]] = []
     fold_states: list[list[dict[str, Any]]] = []
+    start_fold = 0
+
+    if cv_resume:
+        if cv_state_path is None:
+            raise ValueError("cv_resume=True requires save_output_dir.")
+        if os.path.exists(cv_state_path):
+            state = torch.load(cv_state_path, map_location="cpu", weights_only=False)
+            if state.get("completed", False):
+                raise ValueError("Refusing to resume: CV run is already marked completed.")
+            prev_sig = state.get("run_signature")
+            if prev_sig != run_signature:
+                raise ValueError("Resume signature mismatch. Check cv_params and training config.")
+            fold_scores[:] = [float(x) for x in state.get("fold_scores", [])]
+            fold_model_scores[:] = [list(map(float, xs)) for xs in state.get("fold_model_scores", [])]
+            fold_states[:] = list(state.get("states", []))
+            last_completed = state.get("last_completed_fold")
+            if last_completed is None:
+                last_completed = len(fold_states) - 1
+            start_fold = int(last_completed) + 1
+
+    def _save_cv_state(completed: bool, last_fold: int) -> None:
+        if cv_state_path is None:
+            return
+        os.makedirs(save_output_dir, exist_ok=True)
+        torch.save(
+            dict(
+                completed=bool(completed),
+                last_completed_fold=int(last_fold),
+                run_signature=run_signature,
+                fold_scores=fold_scores,
+                fold_model_scores=fold_model_scores,
+                states=fold_states,
+            ),
+            cv_state_path,
+        )
     try:
         uid = "_" + str(uuid.uuid4())[:3]
         exp_name = config_name + uid
@@ -811,6 +775,8 @@ def run_groupkfold_cv(
         for fold_idx, (tr_idx, va_idx) in enumerate(cv_iter):
             if max_folds is not None and int(fold_idx) >= int(max_folds):
                 break
+            if int(fold_idx) < int(start_fold):
+                continue
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             for model_idx in range(int(n_models)):
@@ -824,7 +790,6 @@ def run_groupkfold_cv(
                 else:
                     ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
                 result = train_one_fold(
-                    wide_df=wide_df,
                     ds_tr_view=ds_tr_view,
                     ds_va_view=ds_va_view,
                     tr_idx=tr_idx,
@@ -901,6 +866,12 @@ def run_groupkfold_cv(
                 tiled_inp=bool(tiled_inp),
             )
             fold_scores.append(float(fold_score))
+            _save_cv_state(False, int(fold_idx))
+
+        total_folds = int(max_folds) if max_folds is not None else int(n_splits)
+        if fold_scores:
+            last_fold = int(min(len(fold_scores), total_folds) - 1)
+            _save_cv_state(len(fold_scores) >= total_folds, last_fold)
     finally:
         if comet_exp is not None:
             fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
@@ -922,6 +893,11 @@ def run_groupkfold_cv(
             },
             save_output_path,
         )
+        if cv_state_path is not None and os.path.exists(cv_state_path):
+            try:
+                os.remove(cv_state_path)
+            except OSError:
+                pass
         
     if return_details:
         return {
