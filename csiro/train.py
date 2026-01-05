@@ -404,7 +404,7 @@ def train_one_fold(
                     scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 scaler.step(opt)
-                if opt_ln is not None:
+                if opt_ln is not None and any(p.grad is not None for p in lnk_params_list):
                     scaler.step(opt_ln)
                 scaler.update()
             else:
@@ -412,7 +412,7 @@ def train_one_fold(
                 if clip_val and clip_val > 0:
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 opt.step()
-                if opt_ln is not None:
+                if opt_ln is not None and any(p.grad is not None for p in lnk_params_list):
                     opt_ln.step()
 
             bs = int(x.size(0))
