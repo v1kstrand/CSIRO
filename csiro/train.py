@@ -811,8 +811,6 @@ def run_groupkfold_cv(
                     tiled_inp=bool(tiled_inp),
                     backbone_dtype=backbone_dtype,
                     trainable_dtype=trainable_dtype,
-                    neck_num_heads=train_kwargs.get("neck_num_heads", DEFAULTS.get("neck_num_heads", 12)),
-                    backbone_size=train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")),
                     return_state=True,
                     **train_kwargs,
                 )
