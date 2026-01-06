@@ -549,22 +549,8 @@ def run_groupkfold_cv(
         cv_iter = gkf.split(wide_df, groups=groups)
     else:
         raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
-    
-    comet_exp = None
-    if comet_exp_name is not None:
-        import comet_ml  # type: ignore
 
-        comet_exp = comet_ml.start(
-            api_key=os.getenv("COMET_API_KEY"),
-            project_name=comet_exp_name,
-            experiment_key=None,
-        )
-        for k, v in train_kwargs.items():
-            if isinstance(v, (int, float, str)):
-                comet_exp.log_parameter(k, v)
-            else:
-                comet_exp.log_parameter(k, str(v)[:40])
-
+    org_train_kwargs = train_kwargs.copy()
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
@@ -587,8 +573,6 @@ def run_groupkfold_cv(
         ds_va_view = TiledTransformView(dataset, post_tfms(), tile_swap=False)
     else:
         ds_va_view = TransformView(dataset, post_tfms())
-
-
 
     run_signature = dict(
         cv_params=dict(cv_params),
@@ -634,6 +618,7 @@ def run_groupkfold_cv(
     fold_model_scores: list[list[float]] = []
     fold_states: list[list[dict[str, Any]]] = []
     start_fold = 0
+    state = None
 
     if cv_resume:
         if cv_state_path is None:
@@ -653,6 +638,29 @@ def run_groupkfold_cv(
                 last_completed = len(fold_states) - 1
             start_fold = int(last_completed) + 1
             print(f"INFO: Resuming from fold {start_fold}")
+            
+    exp_key = comet_exp = None
+    if comet_exp_name is not None:
+        import comet_ml  # type: ignore
+        
+        if cv_resume and isinstance(state, dict):
+            exp_key = state.get("exp_key")
+
+        comet_exp = comet_ml.start(
+            api_key=os.getenv("COMET_API_KEY"),
+            project_name=comet_exp_name,
+            experiment_key=exp_key,
+        )
+        if hasattr(comet_exp, "get_key"):
+            try:
+                exp_key = comet_exp.get_key()
+            except Exception:
+                exp_key = None
+        for k, v in org_train_kwargs.items():
+            if isinstance(v, (int, float, str)):
+                comet_exp.log_parameter(k, v)
+            else:
+                comet_exp.log_parameter(k, str(v)[:40])
 
     def _save_cv_state(completed: bool, last_fold: int) -> None:
         if cv_state_path is None:
@@ -666,6 +674,7 @@ def run_groupkfold_cv(
                 fold_scores=fold_scores,
                 fold_model_scores=fold_model_scores,
                 states=fold_states,
+                exp_key=exp_key,
             ),
             cv_state_path,
         )
