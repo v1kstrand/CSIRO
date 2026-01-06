@@ -568,6 +568,7 @@ def run_groupkfold_cv(
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
+    to_gray_p = float(train_kwargs.pop("to_gray", DEFAULTS.get("to_gray", 0.0)))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
     jitter_tfms = build_color_jitter_sweep(
@@ -576,10 +577,12 @@ def run_groupkfold_cv(
         hue_range=tuple(hue_range),
     )
     train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
+    train_post_ops = [post_tfms()]
     if cutout_p > 0.0:
-        train_post = T.Compose([post_tfms(), T.RandomErasing(p=float(cutout_p))])
-    else:
-        train_post = post_tfms()
+        train_post_ops.append(T.RandomErasing(p=float(cutout_p)))
+    if to_gray_p > 0.0:
+        train_post_ops.append(T.RandomGrayscale(p=float(to_gray_p)))
+    train_post = T.Compose(train_post_ops)
     if tiled_inp:
         ds_va_view = TiledTransformView(dataset, post_tfms(), tile_swap=False)
     else:
@@ -601,6 +604,7 @@ def run_groupkfold_cv(
         bcs_range=tuple(bcs_range),
         hue_range=tuple(hue_range),
         cutout=float(cutout_p),
+        to_gray=float(to_gray_p),
         epochs=int(train_kwargs.get("epochs", DEFAULTS["epochs"])),
         batch_size=int(train_kwargs.get("batch_size", DEFAULTS["batch_size"])),
         lr_start=float(train_kwargs.get("lr_start", DEFAULTS["lr_start"])),
