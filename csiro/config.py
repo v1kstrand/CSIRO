@@ -95,7 +95,7 @@ DEFAULTS: dict[str, Any] = dict(
     save_output_dir="/notebooks/kaggle/csiro/output"
 )
 
-def default_num_workers(reserve: int = 2) -> int:
+def default_num_workers(reserve: int = 3) -> int:
     import os
 
     n = (os.cpu_count() or 0) - int(reserve)
