@@ -156,6 +156,7 @@ def train_one_fold(
     tiled_inp: bool = False,
     val_freq: int = 1,
     backbone_size: str | None = None,
+    mixup: tuple[float, float] | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -184,6 +185,13 @@ def train_one_fold(
         trainable_dtype = parse_dtype(DEFAULTS["trainable_dtype"])
     elif isinstance(trainable_dtype, str):
         trainable_dtype = parse_dtype(trainable_dtype)
+
+    if mixup is None:
+        mixup = DEFAULTS.get("mixup", (0.0, 0.0))
+    if not isinstance(mixup, (list, tuple)) or len(mixup) != 2:
+        raise ValueError("mixup must be a (p, alpha) tuple.")
+    mixup_p = float(mixup[0])
+    mixup_alpha = float(mixup[1])
 
     if backbone_size is None:
         backbone_size = str(DEFAULTS.get("backbone_size", "b"))
@@ -235,6 +243,20 @@ def train_one_fold(
         for bi, (x, y_log) in enumerate(dl_tr):
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
+            if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
+                if torch.rand((), device=x.device).item() < mixup_p:
+                    perm = torch.randperm(int(x.size(0)), device=x.device)
+                    x2 = x[perm]
+                    y2 = y_log[perm]
+                    lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((x.size(0),)).to(x.device)
+                    lam_x = lam.view([x.size(0)] + [1] * (x.ndim - 1))
+                    x = x * lam_x + x2 * (1.0 - lam_x)
+
+                    y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                    y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
+                    lam_y = lam.view(x.size(0), 1)
+                    y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
+                    y_log = torch.log1p(y_mix)
 
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
@@ -555,6 +577,7 @@ def run_groupkfold_cv(
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
     to_gray_p = float(train_kwargs.pop("to_gray", DEFAULTS.get("to_gray", 0.0)))
+    mixup_cfg = train_kwargs.get("mixup", DEFAULTS.get("mixup", (0.0, 0.0)))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
     jitter_tfms = build_color_jitter_sweep(
@@ -589,6 +612,7 @@ def run_groupkfold_cv(
         hue_range=tuple(hue_range),
         cutout=float(cutout_p),
         to_gray=float(to_gray_p),
+        mixup=tuple(mixup_cfg) if isinstance(mixup_cfg, (list, tuple)) else mixup_cfg,
         epochs=int(train_kwargs.get("epochs", DEFAULTS["epochs"])),
         batch_size=int(train_kwargs.get("batch_size", DEFAULTS["batch_size"])),
         lr_start=float(train_kwargs.get("lr_start", DEFAULTS["lr_start"])),
