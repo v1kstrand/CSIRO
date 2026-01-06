@@ -567,6 +567,7 @@ def run_groupkfold_cv(
 
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
+    cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
     jitter_tfms = build_color_jitter_sweep(
@@ -575,6 +576,10 @@ def run_groupkfold_cv(
         hue_range=tuple(hue_range),
     )
     train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
+    if cutout_p > 0.0:
+        train_post = T.Compose([post_tfms(), T.RandomErasing(p=float(cutout_p))])
+    else:
+        train_post = post_tfms()
     if tiled_inp:
         ds_va_view = TiledTransformView(dataset, post_tfms(), tile_swap=False)
     else:
@@ -595,6 +600,7 @@ def run_groupkfold_cv(
         img_size=None if img_size is None else int(img_size),
         bcs_range=tuple(bcs_range),
         hue_range=tuple(hue_range),
+        cutout=float(cutout_p),
         epochs=int(train_kwargs.get("epochs", DEFAULTS["epochs"])),
         batch_size=int(train_kwargs.get("batch_size", DEFAULTS["batch_size"])),
         lr_start=float(train_kwargs.get("lr_start", DEFAULTS["lr_start"])),
@@ -678,11 +684,11 @@ def run_groupkfold_cv(
                 if tiled_inp:
                     ds_tr_view = TiledTransformView(
                         dataset,
-                        T.Compose([train_tfms, post_tfms()]),
+                        T.Compose([train_tfms, train_post]),
                         tile_swap=bool(tile_swap),
                     )
                 else:
-                    ds_tr_view = TransformView(dataset, T.Compose([train_tfms, post_tfms()]))
+                    ds_tr_view = TransformView(dataset, T.Compose([train_tfms, train_post]))
                 result = train_one_fold(
                     ds_tr_view=ds_tr_view,
                     ds_va_view=ds_va_view,
