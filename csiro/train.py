@@ -80,62 +80,6 @@ def _load_parts(m: torch.nn.Module, state: dict[str, dict[str, torch.Tensor]]) -
             part.load_state_dict(state[name], strict=True)
 
 
-def _select_backbone_ln_params(backbone, k: int) -> list[torch.nn.Parameter]:
-    blocks = list(getattr(backbone, "blocks", []))
-    if not blocks or int(k) <= 0:
-        return []
-    k = min(int(k), len(blocks))
-    params: list[torch.nn.Parameter] = []
-    for block in blocks[-k:]:
-        for name in ("norm1", "norm2"):
-            ln = getattr(block, name, None)
-            if ln is None:
-                continue
-            for p in ln.parameters():
-                p.requires_grad_(True)
-                params.append(p)
-    return params
-
-
-def _save_backbone_ln_state(backbone, k: int) -> dict[str, torch.Tensor]:
-    blocks = list(getattr(backbone, "blocks", []))
-    if not blocks or int(k) <= 0:
-        return {}
-    k = min(int(k), len(blocks))
-    names = []
-    for i in range(len(blocks) - k, len(blocks)):
-        names.append(f"blocks.{i}.norm1")
-        names.append(f"blocks.{i}.norm2")
-    sd = backbone.state_dict()
-    ln_state = {k: v.detach().cpu() for k, v in sd.items() if any(k.startswith(n) for n in names)}
-    return ln_state
-
-
-def _load_backbone_ln_state(backbone, ln_state: dict[str, torch.Tensor]) -> None:
-    if ln_state:
-        backbone.load_state_dict(ln_state, strict=False)
-
-
-def _lnk_lr_step(
-    step: int,
-    total_steps: int,
-    warmup_steps: int,
-    lr_max: float,
-    lr_min: float,
-) -> float:
-    total_steps = max(int(total_steps), 1)
-    warmup_steps = max(int(warmup_steps), 0)
-    lr_max = float(lr_max)
-    lr_min = float(lr_min)
-    if warmup_steps >= total_steps:
-        return lr_max * float(step) / float(total_steps)
-    if warmup_steps > 0 and int(step) <= warmup_steps:
-        return lr_max * float(step) / float(warmup_steps)
-    remain = max(int(total_steps - warmup_steps), 1)
-    t = (int(step) - warmup_steps - 1) / max(remain - 1, 1)
-    return lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * t))
-
-
 def _build_model_from_state(
     backbone,
     state: dict[str, Any],
@@ -156,9 +100,6 @@ def _build_model_from_state(
         backbone_dtype=backbone_dtype,
     ).to(device)
     _load_parts(model, state["parts"])
-    ln_state = state.get("backbone_ln")
-    if isinstance(ln_state, dict):
-        _load_backbone_ln_state(model.backbone, ln_state)
     return model
 
 def _set_swa_lr(swa_lr_start, swa_lr_final, lr_final):
@@ -214,7 +155,6 @@ def train_one_fold(
     physics_from_log: bool = True,
     tiled_inp: bool = False,
     val_freq: int = 1,
-    lnk_params: dict[str, Any] | None = None,
     backbone_size: str | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
@@ -262,25 +202,6 @@ def train_one_fold(
     ).to(device)
     model.init()
 
-    lnk_cfg = lnk_params if isinstance(lnk_params, dict) else DEFAULTS.get("lnk_params", {})
-    lnk_k = int(lnk_cfg.get("k", 0))
-    if not tiled_inp:
-        lnk_k = 0
-    lnk_warm_up = int(lnk_cfg.get("warm_up_n", 0))
-    lnk_lr_max = float(lnk_cfg.get("lr_max", 0.0))
-    lnk_lr_min = float(lnk_cfg.get("lr_min", 0.0))
-    lnk_wd = float(lnk_cfg.get("wd", 0.0))
-    lnk_params_list: list[torch.nn.Parameter] = []
-    opt_ln = None
-    lnk_active = False
-    best_ln_state = None
-    if lnk_k > 0 and lnk_lr_max > 0:
-        lnk_params_list = _select_backbone_ln_params(model.backbone, lnk_k)
-        if lnk_params_list:
-            model.set_backbone_grad(True)
-            opt_ln = torch.optim.AdamW(lnk_params_list, lr=float(lnk_lr_max), weight_decay=float(lnk_wd))
-            lnk_active = True
-    
     w_loss = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)
     eval_w = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
     criterion = WeightedMSELoss(weights=w_loss).to(device)
@@ -302,9 +223,6 @@ def train_one_fold(
     val_freq = max(1, int(val_freq))
     p_bar = tqdm(range(1, int(epochs) + 1))
     steps_per_epoch = max(len(dl_tr), 1)
-    total_steps = int(epochs) * int(steps_per_epoch)
-    warmup_steps = int(lnk_warm_up) * int(steps_per_epoch)
-    lnk_enabled = bool(lnk_active)
 
     for ep in p_bar:
         lr = cos_sin_lr(int(ep), int(epochs), float(lr_start), float(lr_final))
@@ -318,14 +236,7 @@ def train_one_fold(
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
 
-            if opt_ln is not None:
-                step = (int(ep) - 1) * int(steps_per_epoch) + int(bi) + 1
-                lnk_lr = _lnk_lr_step(step, total_steps, warmup_steps, lnk_lr_max, lnk_lr_min)
-                set_optimizer_lr(opt_ln, float(lnk_lr))
-
             opt.zero_grad(set_to_none=True)
-            if opt_ln is not None:
-                opt_ln.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
                 log_phys = comet_exp is not None and int(ep) > int(skip_log_first_n) and int(bi) == 0
@@ -343,16 +254,12 @@ def train_one_fold(
                     scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 scaler.step(opt)
-                if opt_ln is not None and any(p.grad is not None for p in lnk_params_list):
-                    scaler.step(opt_ln)
                 scaler.update()
             else:
                 loss.backward()
                 if clip_val and clip_val > 0:
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 opt.step()
-                if opt_ln is not None and any(p.grad is not None for p in lnk_params_list):
-                    opt_ln.step()
 
             bs = int(x.size(0))
             running += float(loss_main.detach().item()) * bs
@@ -376,8 +283,6 @@ def train_one_fold(
             patience = 0
             best_state = _save_parts(model)
             best_opt_state = copy.deepcopy(opt.state_dict())
-            if lnk_enabled:
-                best_ln_state = _save_backbone_ln_state(model.backbone, lnk_k)
         else:
             patience += 1
 
@@ -414,8 +319,6 @@ def train_one_fold(
                 "best_state": best_state,
                 "best_opt_state": best_opt_state,
                 "opt_state": copy.deepcopy(opt.state_dict()),
-                "backbone_ln": best_ln_state,
-                "lnk_k": int(lnk_k),
                 "used_swa": False,
             }
         return float(best_score)
@@ -424,15 +327,6 @@ def train_one_fold(
         _load_parts(model, best_state)
         if best_opt_state is not None:
             opt.load_state_dict(best_opt_state)
-        if lnk_enabled and isinstance(best_ln_state, dict):
-            _load_backbone_ln_state(model.backbone, best_ln_state)
-
-    if lnk_active:
-        for p in model.backbone.parameters():
-            p.requires_grad_(False)
-        model.set_backbone_grad(False)
-        opt_ln = None
-        lnk_active = False
 
     swa_model = AveragedModel(model).to(device)
 
@@ -513,9 +407,6 @@ def train_one_fold(
         swa_score = float(eval_global_wr2(swa_model, dl_va, eval_w, device=device))
 
     swa_state = _save_parts(swa_model.module)
-    swa_ln_state = None
-    if lnk_enabled:
-        swa_ln_state = _save_backbone_ln_state(swa_model.module.backbone, lnk_k)
     if save_path:
         torch.save(swa_state, save_path)
 
@@ -528,8 +419,6 @@ def train_one_fold(
             "best_state": best_state,
             "best_opt_state": best_opt_state,
             "opt_state": copy.deepcopy(opt.state_dict()),
-            "backbone_ln": swa_ln_state if swa_ln_state is not None else best_ln_state,
-            "lnk_k": int(lnk_k),
             "used_swa": True,
         }
     return float(swa_score)
@@ -693,10 +582,6 @@ def run_groupkfold_cv(
 
 
 
-    lnk_sig = train_kwargs.get("lnk_params", DEFAULTS.get("lnk_params", {}))
-    if isinstance(lnk_sig, dict):
-        lnk_sig = dict(lnk_sig)
-
     run_signature = dict(
         cv_params=dict(cv_params),
         n_models=int(n_models),
@@ -729,7 +614,6 @@ def run_groupkfold_cv(
         tau_physics=float(train_kwargs.get("tau_physics", DEFAULTS["tau_physics"])),
         physics_from_log=bool(train_kwargs.get("physics_from_log", DEFAULTS.get("physics_from_log", True))),
         val_freq=int(train_kwargs.get("val_freq", DEFAULTS["val_freq"])),
-        lnk_params=lnk_sig,
     )
 
     cv_state_path = None
@@ -825,8 +709,6 @@ def run_groupkfold_cv(
                         tiled_inp=bool(tiled_inp),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
-                        backbone_ln=result.get("backbone_ln"),
-                        lnk_k=int(result.get("lnk_k", 0)),
                         head_hidden=int(train_kwargs["head_hidden"]),
                         head_depth=int(train_kwargs["head_depth"]),
                         head_drop=float(train_kwargs["head_drop"]),

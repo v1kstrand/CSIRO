@@ -88,7 +88,6 @@ DEFAULTS: dict[str, Any] = dict(
     hue_range=(0.02, 0.08),
     tiled_inp=True,
     tile_swap=False,
-    lnk_params=dict(k=0, warm_up_n=0, lr_max=1e-5, lr_min=1e-7, wd=0.0),
     backbone_dtype="fp16",
     trainable_dtype="fp16",
     save_output_dir="/notebooks/kaggle/csiro/output"
