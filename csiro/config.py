@@ -81,7 +81,6 @@ DEFAULTS: dict[str, Any] = dict(
     clip_val=1.0,
     n_models=1,
     val_freq=1,
-    tau_physics=0.0,
     cutout=0.0,
     to_gray=0.0,
     mixup=(0.0, 0.2),

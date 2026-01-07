@@ -24,10 +24,7 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
-from .losses import (
-    PhysicsConsistencyLoss,
-    WeightedMSELoss,
-)
+from .losses import WeightedMSELoss
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor, TiledDINOv3Regressor
 from .transforms import base_train_comp, post_tfms
@@ -151,8 +148,6 @@ def train_one_fold(
     swa_eval_freq: int = 2,
     model_idx: int = 0,
     return_state: bool = False,
-    tau_physics: float = 0.0,
-    physics_from_log: bool = True,
     tiled_inp: bool = False,
     val_freq: int = 1,
     backbone_size: str | None = None,
@@ -217,10 +212,6 @@ def train_one_fold(
     w_loss = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)
     eval_w = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
     criterion = WeightedMSELoss(weights=w_loss).to(device)
-    phys_criterion = PhysicsConsistencyLoss(
-        tau_physics=float(tau_physics),
-        from_log=bool(physics_from_log),
-    ).to(device)
     
     trainable_params = _trainable_params_list(model)
     
@@ -267,19 +258,13 @@ def train_one_fold(
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
                 p_log2 = model(x) if rdrop_w > 0.0 else None
-                log_phys = comet_exp is not None and int(ep) > int(skip_log_first_n) and int(bi) == 0
                 loss_main = criterion(p_log, y_log)
                 loss_rdrop = (
                     ((p_log.float() - p_log2.float()) ** 2).mean()
                     if p_log2 is not None
                     else torch.zeros((), device=p_log.device)
                 )
-                loss_phys = phys_criterion(
-                    p_log,
-                    comet_exp=comet_exp if log_phys else None,
-                    step=int(ep),
-                )
-                loss = loss_main + (float(rdrop_w) * loss_rdrop) + loss_phys
+                loss = loss_main + (float(rdrop_w) * loss_rdrop)
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
