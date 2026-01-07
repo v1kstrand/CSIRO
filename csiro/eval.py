@@ -70,6 +70,27 @@ def _require_tiled_runs(runs: list[list[dict[str, Any]]]) -> None:
                 raise ValueError("predict_ensemble_tiled requires tiled checkpoints (tiled_inp=True).")
 
 
+def _trainable_params(model: torch.nn.Module) -> list[torch.nn.Parameter]:
+    params: list[torch.nn.Parameter] = []
+    for name in ("neck", "head", "norm"):
+        part = getattr(model, name, None)
+        if part is not None:
+            for p in part.parameters():
+                if p.requires_grad:
+                    params.append(p)
+    return params
+
+
+def _parse_ttt(ttt: dict[str, Any] | tuple[int, float, float] | None) -> tuple[int, float, float]:
+    if ttt is None:
+        ttt = DEFAULTS.get("ttt", {})
+    if isinstance(ttt, dict):
+        return int(ttt.get("steps", 0)), float(ttt.get("lr", 1e-4)), float(ttt.get("beta", 0.0))
+    if isinstance(ttt, (list, tuple)) and len(ttt) == 3:
+        return int(ttt[0]), float(ttt[1]), float(ttt[2])
+    raise ValueError("ttt must be a dict or (steps, lr, beta) tuple.")
+
+
 def _build_model_from_state(
     backbone,
     state: dict[str, Any],
@@ -188,7 +209,6 @@ def load_dinov3_regressor_from_pt(
 
 
 
-@torch.no_grad()
 def predict_ensemble(
     data,
     states: Any,
@@ -202,6 +222,7 @@ def predict_ensemble(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     outer_agg: str = "mean",
+    ttt: dict[str, Any] | tuple[int, float, float] | None = None,
 ) -> torch.Tensor:
     runs = _normalize_runs(states)
 
@@ -232,6 +253,8 @@ def predict_ensemble(
 
     tfms = post_tfms()
     outer_agg = str(outer_agg).lower()
+    ttt_steps, ttt_lr, ttt_beta = _parse_ttt(ttt)
+    use_ttt = ttt_steps > 0 and ttt_lr > 0.0
 
     def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
         for model in models:
@@ -240,17 +263,47 @@ def predict_ensemble(
             model.eval()
 
         preds: list[torch.Tensor] = []
-        with torch.inference_mode(), autocast_context(device, dtype=trainable_dtype):
-            for batch in dl:
-                if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                    x = batch[0]
-                else:
-                    x = batch
+        ctx = autocast_context(device, dtype=trainable_dtype)
+        for batch in dl:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                x = batch[0]
+            else:
+                x = batch
 
-                x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
+            x = _ensure_tensor_batch(x, tfms).to(device, non_blocking=True)
 
-                preds_models: list[torch.Tensor] = []
-                for model in models:
+            preds_models: list[torch.Tensor] = []
+            for model in models:
+                snap = None
+                if use_ttt:
+                    params = _trainable_params(model)
+                    if params:
+                        snap = [p.detach().clone() for p in params]
+                        if hasattr(model, "set_train"):
+                            model.set_train(True)
+                        for _ in range(int(ttt_steps)):
+                            with autocast_context(device, dtype=trainable_dtype):
+                                if x.ndim == 5:
+                                    x_tta, _ = _split_tta_batch(x)
+                                    p1 = model(x_tta)
+                                    p2 = model(x_tta)
+                                else:
+                                    p1 = model(x)
+                                    p2 = model(x)
+                                loss = ((p1.float() - p2.float()) ** 2).mean()
+                                if ttt_beta > 0.0:
+                                    reg = torch.zeros((), device=x.device)
+                                    for p, s in zip(params, snap):
+                                        reg = reg + (p - s).pow(2).mean()
+                                    loss = loss + float(ttt_beta) * reg
+                            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+                            with torch.no_grad():
+                                for p, g in zip(params, grads):
+                                    if g is not None:
+                                        p.add_(g, alpha=-float(ttt_lr))
+                        if hasattr(model, "set_train"):
+                            model.set_train(False)
+                with torch.no_grad(), ctx:
                     if x.ndim == 5:
                         x_tta, t = _split_tta_batch(x)
                         p_log = model(x_tta).float()
@@ -263,9 +316,13 @@ def predict_ensemble(
                         preds_models.append(p)
                     else:
                         raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
+                if snap is not None:
+                    with torch.no_grad():
+                        for p, s in zip(_trainable_params(model), snap):
+                            p.copy_(s)
 
-                p_ens = _agg_stack(preds_models, inner_agg)
-                preds.append(p_ens.detach().cpu())
+            p_ens = _agg_stack(preds_models, inner_agg)
+            preds.append(p_ens.detach().cpu())
 
         return torch.cat(preds, dim=0)
 
@@ -282,7 +339,6 @@ def predict_ensemble(
     raise ValueError(f"Unknown outer_agg: {outer_agg}")
 
 
-@torch.no_grad()
 def predict_ensemble_tiled(
     data,
     states: Any,
@@ -296,6 +352,7 @@ def predict_ensemble_tiled(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     outer_agg: str = "mean",
+    ttt: dict[str, Any] | tuple[int, float, float] | None = None,
 ) -> torch.Tensor:
     runs = _normalize_runs(states)
     _require_tiled_runs(runs)
@@ -327,6 +384,8 @@ def predict_ensemble_tiled(
         trainable_dtype = parse_dtype(trainable_dtype)
 
     outer_agg = str(outer_agg).lower()
+    ttt_steps, ttt_lr, ttt_beta = _parse_ttt(ttt)
+    use_ttt = ttt_steps > 0 and ttt_lr > 0.0
 
     def _predict_with_models(models: list[DINOv3Regressor]) -> torch.Tensor:
         for model in models:
@@ -335,19 +394,52 @@ def predict_ensemble_tiled(
             model.eval()
 
         preds: list[torch.Tensor] = []
-        with torch.inference_mode(), autocast_context(device, dtype=trainable_dtype):
-            for batch in dl:
-                if isinstance(batch, (tuple, list)) and len(batch) >= 1:
-                    x = batch[0]
-                else:
-                    x = batch
+        ctx = autocast_context(device, dtype=trainable_dtype)
+        for batch in dl:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                x = batch[0]
+            else:
+                x = batch
 
-                if not torch.is_tensor(x):
-                    raise ValueError("predict_ensemble_tiled expects tensor batches.")
-                x = x.to(device, non_blocking=True)
+            if not torch.is_tensor(x):
+                raise ValueError("predict_ensemble_tiled expects tensor batches.")
+            x = x.to(device, non_blocking=True)
 
-                preds_models: list[torch.Tensor] = []
-                for model in models:
+            preds_models: list[torch.Tensor] = []
+            for model in models:
+                snap = None
+                if use_ttt:
+                    params = _trainable_params(model)
+                    if params:
+                        snap = [p.detach().clone() for p in params]
+                        if hasattr(model, "set_train"):
+                            model.set_train(True)
+                        for _ in range(int(ttt_steps)):
+                            with autocast_context(device, dtype=trainable_dtype):
+                                if x.ndim == 6:
+                                    b, t, tiles, c, h, w = x.shape
+                                    if tiles != 2:
+                                        raise ValueError(f"Expected tiles=2, got {tiles}.")
+                                    x_tta = x.view(b * t, tiles, c, h, w)
+                                    p1 = model(x_tta)
+                                    p2 = model(x_tta)
+                                else:
+                                    p1 = model(x)
+                                    p2 = model(x)
+                                loss = ((p1.float() - p2.float()) ** 2).mean()
+                                if ttt_beta > 0.0:
+                                    reg = torch.zeros((), device=x.device)
+                                    for p, s in zip(params, snap):
+                                        reg = reg + (p - s).pow(2).mean()
+                                    loss = loss + float(ttt_beta) * reg
+                            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+                            with torch.no_grad():
+                                for p, g in zip(params, grads):
+                                    if g is not None:
+                                        p.add_(g, alpha=-float(ttt_lr))
+                        if hasattr(model, "set_train"):
+                            model.set_train(False)
+                with torch.no_grad(), ctx:
                     if x.ndim == 6:
                         b, t, tiles, c, h, w = x.shape
                         if tiles != 2:
@@ -363,9 +455,13 @@ def predict_ensemble_tiled(
                         preds_models.append(p)
                     else:
                         raise ValueError(f"Expected [B,2,C,H,W] or [B,T,2,C,H,W], got {tuple(x.shape)}")
+                if snap is not None:
+                    with torch.no_grad():
+                        for p, s in zip(_trainable_params(model), snap):
+                            p.copy_(s)
 
-                p_ens = _agg_stack(preds_models, inner_agg)
-                preds.append(p_ens.detach().cpu())
+            p_ens = _agg_stack(preds_models, inner_agg)
+            preds.append(p_ens.detach().cpu())
 
         return torch.cat(preds, dim=0)
 
@@ -395,6 +491,7 @@ def predict_ensemble_from_pt(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     outer_agg: str = "flatten",
+    ttt: dict[str, Any] | tuple[int, float, float] | None = None,
 ) -> torch.Tensor:
     states = load_states_from_pt(pt_path)
     return predict_ensemble(
@@ -409,4 +506,5 @@ def predict_ensemble_from_pt(
         tta_agg=tta_agg,
         inner_agg=inner_agg,
         outer_agg=outer_agg,
+        ttt=ttt,
     )

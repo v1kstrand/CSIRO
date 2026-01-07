@@ -157,6 +157,7 @@ def train_one_fold(
     val_freq: int = 1,
     backbone_size: str | None = None,
     mixup: tuple[float, float] | None = None,
+    rdrop: float | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -192,6 +193,9 @@ def train_one_fold(
         raise ValueError("mixup must be a (p, alpha) tuple.")
     mixup_p = float(mixup[0])
     mixup_alpha = float(mixup[1])
+    if rdrop is None:
+        rdrop = DEFAULTS.get("rdrop", 0.0)
+    rdrop_w = float(rdrop)
 
     if backbone_size is None:
         backbone_size = str(DEFAULTS.get("backbone_size", "b"))
@@ -261,14 +265,20 @@ def train_one_fold(
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
+                p_log2 = model(x) if rdrop_w > 0.0 else None
                 log_phys = comet_exp is not None and int(ep) > int(skip_log_first_n) and int(bi) == 0
                 loss_main = criterion(p_log, y_log)
+                loss_rdrop = (
+                    ((p_log.float() - p_log2.float()) ** 2).mean()
+                    if p_log2 is not None
+                    else torch.zeros((), device=p_log.device)
+                )
                 loss_phys = phys_criterion(
                     p_log,
                     comet_exp=comet_exp if log_phys else None,
                     step=int(ep),
                 )
-                loss = loss_main + loss_phys
+                loss = loss_main + (float(rdrop_w) * loss_rdrop) + loss_phys
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -446,7 +456,6 @@ def train_one_fold(
     return float(swa_score)
 
 
-@torch.no_grad()
 def eval_global_wr2_ensemble(
     models: list[torch.nn.Module],
     dl_va,
@@ -457,6 +466,7 @@ def eval_global_wr2_ensemble(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     tiled_inp: bool = False,
+    ttt: dict[str, Any] | tuple[int, float, float] | None = None,
     comet_exp: Any | None = None,
     curr_fold: int | None = None,
 ) -> float:
@@ -476,18 +486,72 @@ def eval_global_wr2_ensemble(
     elif isinstance(trainable_dtype, str):
         trainable_dtype = parse_dtype(trainable_dtype)
 
-    with torch.inference_mode(), autocast_context(device, dtype=trainable_dtype):
-        for batch in dl_va:
-            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
-                x, y_log = batch[0], batch[1]
-            else:
-                raise ValueError("Validation loader must yield (x, y_log).")
+    if ttt is None:
+        ttt = DEFAULTS.get("ttt", {})
+    if isinstance(ttt, dict):
+        ttt_steps = int(ttt.get("steps", 0))
+        ttt_lr = float(ttt.get("lr", 1e-4))
+        ttt_beta = float(ttt.get("beta", 0.0))
+    elif isinstance(ttt, (list, tuple)) and len(ttt) == 3:
+        ttt_steps = int(ttt[0])
+        ttt_lr = float(ttt[1])
+        ttt_beta = float(ttt[2])
+    else:
+        raise ValueError("ttt must be a dict or (steps, lr, beta) tuple.")
 
-            x = x.to(device, non_blocking=True)
-            y_log = y_log.to(device, non_blocking=True)
+    def _snapshot_params(params: list[torch.nn.Parameter]) -> list[torch.Tensor]:
+        return [p.detach().clone() for p in params]
 
-            preds_models: list[torch.Tensor] = []
-            for model in models:
+    def _restore_params(params: list[torch.nn.Parameter], snap: list[torch.Tensor]) -> None:
+        with torch.no_grad():
+            for p, s in zip(params, snap):
+                p.copy_(s)
+
+    def _ttt_update(model: torch.nn.Module, x: torch.Tensor, params: list[torch.nn.Parameter]) -> list[torch.Tensor] | None:
+        if ttt_steps <= 0 or ttt_lr <= 0.0 or not params:
+            return None
+        snap = _snapshot_params(params)
+        if hasattr(model, "set_train"):
+            model.set_train(True)
+        for _ in range(int(ttt_steps)):
+            with autocast_context(device, dtype=trainable_dtype):
+                p1 = model(x)
+                p2 = model(x)
+                loss = ((p1.float() - p2.float()) ** 2).mean()
+                if ttt_beta > 0.0:
+                    reg = torch.zeros((), device=x.device)
+                    for p, s in zip(params, snap):
+                        reg = reg + (p - s).pow(2).mean()
+                    loss = loss + float(ttt_beta) * reg
+            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+            with torch.no_grad():
+                for p, g in zip(params, grads):
+                    if g is not None:
+                        p.add_(g, alpha=-float(ttt_lr))
+        if hasattr(model, "set_train"):
+            model.set_train(False)
+        return snap
+
+    use_ttt = ttt_steps > 0 and ttt_lr > 0.0
+    ctx = autocast_context(device, dtype=trainable_dtype)
+
+    for batch in dl_va:
+        if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+            x, y_log = batch[0], batch[1]
+        else:
+            raise ValueError("Validation loader must yield (x, y_log).")
+
+        x = x.to(device, non_blocking=True)
+        y_log = y_log.to(device, non_blocking=True)
+
+        preds_models: list[torch.Tensor] = []
+        for model in models:
+            snap = None
+            if use_ttt:
+                params = _trainable_params_list(model)
+                with torch.enable_grad():
+                    snap = _ttt_update(model, x, params)
+            with torch.no_grad(), ctx:
                 if tiled_inp:
                     if x.ndim != 5:
                         raise ValueError(f"Expected tiled batch [B,2,C,H,W], got {tuple(x.shape)}")
@@ -506,17 +570,19 @@ def eval_global_wr2_ensemble(
                     preds_models.append(p)
                 else:
                     raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
+            if snap is not None:
+                _restore_params(_trainable_params_list(model), snap)
 
-            p_ens = _agg_stack(preds_models, inner_agg)
+        p_ens = _agg_stack(preds_models, inner_agg)
 
-            y = torch.expm1(y_log.float())
-            diff = y - p_ens
-            w = w5.expand_as(y)
+        y = torch.expm1(y_log.float())
+        diff = y - p_ens
+        w = w5.expand_as(y)
 
-            ss_res += (w * diff * diff).sum()
-            sum_w += w.sum()
-            sum_wy += (w * y).sum()
-            sum_wy2 += (w * y * y).sum()
+        ss_res += (w * diff * diff).sum()
+        sum_w += w.sum()
+        sum_wy += (w * y).sum()
+        sum_wy2 += (w * y * y).sum()
 
     mu = sum_wy / (sum_w + 1e-12)
     ss_tot = sum_wy2 - sum_w * mu * mu
@@ -578,6 +644,9 @@ def run_groupkfold_cv(
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
     to_gray_p = float(train_kwargs.pop("to_gray", DEFAULTS.get("to_gray", 0.0)))
     mixup_cfg = train_kwargs.get("mixup", DEFAULTS.get("mixup", (0.0, 0.0)))
+    rdrop_cfg = train_kwargs.get("rdrop", DEFAULTS.get("rdrop", 0.0))
+    val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
+    ttt_cfg = train_kwargs.pop("ttt", DEFAULTS.get("ttt", {}))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
     jitter_tfms = build_color_jitter_sweep(
@@ -613,6 +682,9 @@ def run_groupkfold_cv(
         cutout=float(cutout_p),
         to_gray=float(to_gray_p),
         mixup=tuple(mixup_cfg) if isinstance(mixup_cfg, (list, tuple)) else mixup_cfg,
+        rdrop=float(rdrop_cfg),
+        val_bs=val_bs_override,
+        ttt=ttt_cfg,
         epochs=int(train_kwargs.get("epochs", DEFAULTS["epochs"])),
         batch_size=int(train_kwargs.get("batch_size", DEFAULTS["batch_size"])),
         lr_start=float(train_kwargs.get("lr_start", DEFAULTS["lr_start"])),
@@ -773,7 +845,10 @@ def run_groupkfold_cv(
             num_workers = train_kwargs.get("num_workers", None)
             num_workers = default_num_workers() if num_workers is None else int(num_workers)
             tile_n = 2 if tiled_inp else 1
-            val_bs = max(1, int(train_kwargs["batch_size"]) // int(tile_n))
+            if val_bs_override is None:
+                val_bs = max(1, int(train_kwargs["batch_size"]) // int(tile_n))
+            else:
+                val_bs = max(1, int(val_bs_override))
             dl_va = DataLoader(
                 va_subset,
                 shuffle=False,
@@ -801,6 +876,7 @@ def run_groupkfold_cv(
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
                 tiled_inp=bool(tiled_inp),
+                ttt=ttt_cfg,
             )
             fold_scores.append(float(fold_score))
             _save_cv_state(False, int(fold_idx))
