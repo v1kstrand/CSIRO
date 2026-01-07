@@ -891,9 +891,10 @@ def run_groupkfold_cv(
             _save_cv_state(len(fold_scores) >= total_folds, last_fold)
     finally:
         if comet_exp is not None:
-            fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
-            comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
-            comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
+            if fold_scores:
+                fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
+                comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
+                comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
