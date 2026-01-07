@@ -242,6 +242,7 @@ def train_one_fold(
 
         model.set_train(True)
         running = 0.0
+        running_rd = 0.0
         n_seen = 0
 
         for bi, (x, y_log) in enumerate(dl_tr):
@@ -295,9 +296,11 @@ def train_one_fold(
 
             bs = int(x.size(0))
             running += float(loss_main.detach().item()) * bs
+            running_rd += float(loss_rdrop.detach().item()) * bs
             n_seen += bs
 
         train_loss = running / max(int(n_seen), 1)
+        train_rd_loss = running_rd / max(int(n_seen), 1)
         do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
         score = None
         if do_eval:
@@ -306,6 +309,7 @@ def train_one_fold(
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
             p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
+            p[f"x_train_rdrop_cv{curr_fold}_m{model_idx}"] = float(train_rd_loss)
             if score is not None:
                 p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
             comet_exp.log_metrics(p, step=int(ep))
