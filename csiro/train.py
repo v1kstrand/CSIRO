@@ -670,46 +670,6 @@ def run_groupkfold_cv(
     else:
         ds_va_view = TransformView(dataset, post_tfms())
 
-    run_signature = dict(
-        cv_params=dict(cv_params),
-        n_models=int(n_models),
-        tiled_inp=bool(tiled_inp),
-        tile_swap=bool(tile_swap),
-        head_hidden=int(train_kwargs.get("head_hidden", DEFAULTS["head_hidden"])),
-        head_depth=int(train_kwargs.get("head_depth", DEFAULTS["head_depth"])),
-        head_drop=float(train_kwargs.get("head_drop", DEFAULTS["head_drop"])),
-        num_neck=int(train_kwargs.get("num_neck", DEFAULTS["num_neck"])),
-        neck_num_heads=int(train_kwargs.get("neck_num_heads", DEFAULTS.get("neck_num_heads", 12))),
-        img_size=None if img_size is None else int(img_size),
-        bcs_range=tuple(bcs_range),
-        hue_range=tuple(hue_range),
-        cutout=float(cutout_p),
-        to_gray=float(to_gray_p),
-        mixup=tuple(mixup_cfg) if isinstance(mixup_cfg, (list, tuple)) else mixup_cfg,
-        rdrop=float(rdrop_cfg),
-        val_bs=val_bs_override,
-        ttt=ttt_cfg,
-        epochs=int(train_kwargs.get("epochs", DEFAULTS["epochs"])),
-        batch_size=int(train_kwargs.get("batch_size", DEFAULTS["batch_size"])),
-        lr_start=float(train_kwargs.get("lr_start", DEFAULTS["lr_start"])),
-        lr_final=float(train_kwargs.get("lr_final", DEFAULTS["lr_final"])),
-        wd=float(train_kwargs.get("wd", DEFAULTS["wd"])),
-        early_stopping=int(train_kwargs.get("early_stopping", DEFAULTS["early_stopping"])),
-        swa_epochs=int(train_kwargs.get("swa_epochs", DEFAULTS["swa_epochs"])),
-        swa_lr_start=train_kwargs.get("swa_lr_start", DEFAULTS["swa_lr_start"]),
-        swa_lr_final=train_kwargs.get("swa_lr_final", DEFAULTS["swa_lr_final"]),
-        swa_anneal_epochs=int(train_kwargs.get("swa_anneal_epochs", DEFAULTS["swa_anneal_epochs"])),
-        swa_load_best=bool(train_kwargs.get("swa_load_best", DEFAULTS["swa_load_best"])),
-        swa_eval_freq=int(train_kwargs.get("swa_eval_freq", DEFAULTS["swa_eval_freq"])),
-        clip_val=train_kwargs.get("clip_val", DEFAULTS["clip_val"]),
-        backbone_dtype=train_kwargs.get("backbone_dtype", DEFAULTS["backbone_dtype"]),
-        trainable_dtype=train_kwargs.get("trainable_dtype", DEFAULTS["trainable_dtype"]),
-        backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
-        tau_physics=float(train_kwargs.get("tau_physics", DEFAULTS["tau_physics"])),
-        physics_from_log=bool(train_kwargs.get("physics_from_log", DEFAULTS.get("physics_from_log", True))),
-        val_freq=int(train_kwargs.get("val_freq", DEFAULTS["val_freq"])),
-    )
-
     cv_state_path = None
     if save_output_dir is not None:
         cv_state_path = os.path.join(save_output_dir, f"{config_name}_cv_state.pt")
@@ -727,9 +687,6 @@ def run_groupkfold_cv(
             state = torch.load(cv_state_path, map_location="cpu", weights_only=False)
             if state.get("completed", False):
                 raise ValueError("Refusing to resume: CV run is already marked completed.")
-            prev_sig = state.get("run_signature")
-            if prev_sig != run_signature:
-                raise ValueError("Resume signature mismatch. Check cv_params and training config.")
             fold_scores[:] = [float(x) for x in state.get("fold_scores", [])]
             fold_model_scores[:] = [list(map(float, xs)) for xs in state.get("fold_model_scores", [])]
             fold_states[:] = list(state.get("states", []))
@@ -770,7 +727,6 @@ def run_groupkfold_cv(
             dict(
                 completed=bool(completed),
                 last_completed_fold=int(last_fold),
-                run_signature=run_signature,
                 fold_scores=fold_scores,
                 fold_model_scores=fold_model_scores,
                 states=fold_states,
