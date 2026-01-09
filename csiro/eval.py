@@ -7,6 +7,7 @@ import glob
 import torch
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import GroupKFold
+from tqdm.auto import tqdm
 
 from .amp import autocast_context
 from .config import DEFAULTS, DEFAULT_LOSS_WEIGHTS, default_num_workers, parse_dtype, neck_num_heads_for
@@ -853,7 +854,7 @@ def ttt_sweep_cv(
         return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt)
 
     results: list[dict[str, Any]] = []
-    for sweep in sweeps:
+    for sweep in tqdm(sweeps, desc="TTT sweeps"):
         task = sweep.get("task")
         if task is None:
             raise ValueError("Each sweep must include a 'task'.")
@@ -868,7 +869,8 @@ def ttt_sweep_cv(
         fold_ttt: list[float] = []
         fold_delta: list[float] = []
 
-        for fold_idx, (_, va_idx) in enumerate(cv_iter):
+        fold_iter = tqdm(cv_iter, desc=f"{name} folds", leave=False)
+        for fold_idx, (_, va_idx) in enumerate(fold_iter):
             fold_runs: list[list[dict[str, Any]]] = []
             for run in runs:
                 fold_states = [s for s in run if int(s.get("fold_idx", -1)) == int(fold_idx)]
