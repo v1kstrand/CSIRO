@@ -5,10 +5,11 @@ from pathlib import Path
 import glob
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
+from sklearn.model_selection import GroupKFold
 
 from .amp import autocast_context
-from .config import DEFAULTS, default_num_workers, parse_dtype, neck_num_heads_for
+from .config import DEFAULTS, DEFAULT_LOSS_WEIGHTS, default_num_workers, parse_dtype, neck_num_heads_for
 from .ensemble_utils import (
     _agg_stack,
     _agg_tta,
@@ -79,6 +80,38 @@ def _trainable_params(model: torch.nn.Module) -> list[torch.nn.Parameter]:
                 if p.requires_grad:
                     params.append(p)
     return params
+
+
+def _resolve_param_spec(
+    model: torch.nn.Module,
+    param_spec: Any | None,
+) -> list[torch.nn.Parameter]:
+    if param_spec is None:
+        return _trainable_params(model)
+    if callable(param_spec):
+        params = list(param_spec(model))
+    elif isinstance(param_spec, (list, tuple)):
+        if not param_spec:
+            return []
+        if all(isinstance(x, str) for x in param_spec):
+            named = dict(model.named_parameters())
+            params = []
+            for key in param_spec:
+                if key in named:
+                    params.append(named[key])
+                    continue
+                part = getattr(model, str(key), None)
+                if part is None:
+                    raise ValueError(f"Unknown param spec '{key}'.")
+                if isinstance(part, torch.nn.Module):
+                    params.extend([p for p in part.parameters() if p.requires_grad])
+                else:
+                    raise ValueError(f"Param spec '{key}' is not a module or parameter name.")
+        else:
+            raise ValueError("param_spec list must contain only strings or be a callable.")
+    else:
+        raise ValueError("param_spec must be None, a callable, or a list of strings.")
+    return [p for p in params if p.requires_grad]
 
 
 def _parse_ttt(ttt: dict[str, Any] | tuple[int, float, float] | None) -> tuple[int, float, float]:
@@ -508,3 +541,360 @@ def predict_ensemble_from_pt(
         outer_agg=outer_agg,
         ttt=ttt,
     )
+
+
+def _wr2_stats_init(device: str | torch.device) -> dict[str, torch.Tensor]:
+    return dict(
+        ss_res=torch.zeros((), device=device),
+        sum_w=torch.zeros((), device=device),
+        sum_wy=torch.zeros((), device=device),
+        sum_wy2=torch.zeros((), device=device),
+    )
+
+
+def _wr2_stats_update(
+    stats: dict[str, torch.Tensor],
+    y: torch.Tensor,
+    p: torch.Tensor,
+    w5: torch.Tensor,
+) -> None:
+    w = w5.expand_as(y)
+    diff = y - p
+    stats["ss_res"] += (w * diff * diff).sum()
+    stats["sum_w"] += w.sum()
+    stats["sum_wy"] += (w * y).sum()
+    stats["sum_wy2"] += (w * y * y).sum()
+
+
+def _wr2_from_stats(stats: dict[str, torch.Tensor]) -> float:
+    mu = stats["sum_wy"] / (stats["sum_w"] + 1e-12)
+    ss_tot = stats["sum_wy2"] - stats["sum_w"] * mu * mu
+    return (1.0 - stats["ss_res"] / (ss_tot + 1e-12)).item()
+
+
+def _make_cv_iter(wide_df, cv_params: dict[str, Any] | None) -> list[tuple[Any, Any]]:
+    if cv_params is None:
+        cv_params = DEFAULTS.get("cv_params", {})
+    if not isinstance(cv_params, dict):
+        raise ValueError("cv_params must be a dict.")
+    mode = str(cv_params.get("mode", "gkf")).lower()
+    if mode != "gkf":
+        raise ValueError(f"Unsupported cv mode: {mode}")
+    if "cv_seed" not in cv_params:
+        raise ValueError("cv_params must include 'cv_seed'.")
+    n_splits = int(cv_params.get("n_splits", DEFAULTS["cv_params"]["n_splits"]))
+    groups = wide_df["Sampling_Date"].values
+    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_params["cv_seed"]))
+    return list(gkf.split(wide_df, groups=groups))
+
+
+def ttt_sweep_cv(
+    dataset,
+    wide_df,
+    backbone,
+    *,
+    pt_paths: list[str] | str | None = None,
+    states: Any | None = None,
+    cv_params: dict[str, Any] | None = None,
+    sweeps: list[dict[str, Any]] | None = None,
+    batch_size: int = 64,
+    num_workers: int | None = None,
+    device: str | torch.device = "cuda",
+    backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
+    tta_agg: str = "mean",
+    inner_agg: str = "mean",
+    outer_agg: str = "mean",
+) -> list[dict[str, Any]]:
+    if sweeps is None or not sweeps:
+        raise ValueError("sweeps must be a non-empty list.")
+    if states is None:
+        if pt_paths is None:
+            raise ValueError("Provide states or pt_paths.")
+        runs = load_ensemble_states(pt_paths)
+    else:
+        runs = _normalize_runs(states)
+    if not runs:
+        raise ValueError("No runs found for TTT sweep.")
+    _require_tiled_runs(runs)
+
+    if num_workers is None:
+        num_workers = default_num_workers()
+    if backbone_dtype is None:
+        backbone_dtype = DEFAULTS["backbone_dtype"]
+    if isinstance(backbone_dtype, str):
+        backbone_dtype = parse_dtype(backbone_dtype)
+    if trainable_dtype is None:
+        trainable_dtype = DEFAULTS["trainable_dtype"]
+    if isinstance(trainable_dtype, str):
+        trainable_dtype = parse_dtype(trainable_dtype)
+
+    cv_iter = _make_cv_iter(wide_df, cv_params)
+    w_vec = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device).view(1, -1)
+
+    outer_agg = str(outer_agg).lower()
+    inner_agg = str(inner_agg).lower()
+
+    def _forward_model(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim == 6:
+            b, t, tiles, c, h, w = x.shape
+            if tiles != 2:
+                raise ValueError(f"Expected tiles=2, got {tiles}.")
+            x_tta = x.view(b * t, tiles, c, h, w)
+            p_log = model(x_tta).float()
+            p = torch.expm1(p_log).clamp_min(0.0)
+            p = p.view(b, t, -1)
+            return _agg_tta(p, tta_agg)
+        if x.ndim == 5:
+            p_log = model(x).float()
+            return torch.expm1(p_log).clamp_min(0.0)
+        raise ValueError(f"Expected tiled batch [B,2,C,H,W] or [B,T,2,C,H,W], got {tuple(x.shape)}")
+
+    def _eval_fold(
+        fold_runs: list[list[dict[str, Any]]],
+        va_idx,
+        fold_idx: int,
+        task,
+        param_spec,
+        steps: int,
+        lr: float,
+        beta: float,
+        bs: int,
+    ) -> tuple[float, float]:
+        subset = Subset(dataset, va_idx)
+        tta_n = _get_tta_n(subset)
+        tile_n = 2
+        bs_eff = max(1, int(bs) // int(tile_n * max(1, tta_n)))
+        dl = DataLoader(
+            subset,
+            shuffle=False,
+            batch_size=int(bs_eff),
+            pin_memory=str(device).startswith("cuda"),
+            num_workers=int(num_workers),
+            persistent_workers=(num_workers > 0),
+        )
+
+        def _make_models(states_list: list[dict[str, Any]]) -> list[torch.nn.Module]:
+            return [_build_model_from_state(backbone, s, device, backbone_dtype) for s in states_list]
+
+        def _make_params(models: list[torch.nn.Module]) -> list[list[torch.nn.Parameter]]:
+            return [_resolve_param_spec(m, param_spec) for m in models]
+
+        use_ttt = steps > 0 and lr > 0.0
+        stats_base = _wr2_stats_init(device)
+        stats_ttt = _wr2_stats_init(device)
+
+        if outer_agg == "flatten":
+            flat_states = [s for run in fold_runs for s in run]
+            models = _make_models(flat_states)
+            params_list = _make_params(models)
+
+            for model in models:
+                if hasattr(model, "set_train"):
+                    model.set_train(False)
+                model.eval()
+
+            for batch_idx, batch in enumerate(dl):
+                if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                    x, y_log = batch[0], batch[1]
+                else:
+                    raise ValueError("TTT sweep requires (x, y_log) batches.")
+                x = x.to(device, non_blocking=True)
+                y_log = y_log.to(device, non_blocking=True)
+                y = torch.expm1(y_log.float())
+
+                base_preds_models: list[torch.Tensor] = []
+                ttt_preds_models: list[torch.Tensor] = []
+                for model_idx, (model, params) in enumerate(zip(models, params_list)):
+                    with torch.no_grad(), autocast_context(device, dtype=trainable_dtype):
+                        p_base = _forward_model(model, x)
+                    base_preds_models.append(p_base)
+
+                    if use_ttt and params:
+                        snap = [p.detach().clone() for p in params]
+                        for step_idx in range(int(steps)):
+                            ctx = dict(
+                                device=device,
+                                trainable_dtype=trainable_dtype,
+                                backbone_dtype=backbone_dtype,
+                                fold_idx=int(fold_idx),
+                                model_idx=int(model_idx),
+                                batch_idx=int(batch_idx),
+                                step_idx=int(step_idx),
+                            )
+                            with torch.enable_grad(), autocast_context(device, dtype=trainable_dtype):
+                                loss = task(model, x, ctx)
+                                if isinstance(loss, (tuple, list)):
+                                    loss = loss[0]
+                                loss = loss.float()
+                                if beta > 0.0:
+                                    reg = torch.zeros((), device=x.device)
+                                    for p, s in zip(params, snap):
+                                        reg = reg + (p - s).pow(2).mean()
+                                    loss = loss + float(beta) * reg
+                            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+                            with torch.no_grad():
+                                for p, g in zip(params, grads):
+                                    if g is not None:
+                                        p.add_(g, alpha=-float(lr))
+                        if hasattr(model, "set_train"):
+                            model.set_train(False)
+                        model.eval()
+                        with torch.no_grad(), autocast_context(device, dtype=trainable_dtype):
+                            p_ttt = _forward_model(model, x)
+                        with torch.no_grad():
+                            for p, s in zip(params, snap):
+                                p.copy_(s)
+                    else:
+                        p_ttt = p_base
+                    ttt_preds_models.append(p_ttt)
+
+                p_base = _agg_stack(base_preds_models, inner_agg)
+                p_ttt = _agg_stack(ttt_preds_models, inner_agg)
+                _wr2_stats_update(stats_base, y, p_base, w_vec)
+                _wr2_stats_update(stats_ttt, y, p_ttt, w_vec)
+
+            return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt)
+
+        run_models: list[list[torch.nn.Module]] = []
+        run_params: list[list[list[torch.nn.Parameter]]] = []
+        for run_states in fold_runs:
+            models = _make_models(run_states)
+            for model in models:
+                if hasattr(model, "set_train"):
+                    model.set_train(False)
+                model.eval()
+            run_models.append(models)
+            run_params.append(_make_params(models))
+
+        for batch_idx, batch in enumerate(dl):
+            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                x, y_log = batch[0], batch[1]
+            else:
+                raise ValueError("TTT sweep requires (x, y_log) batches.")
+            x = x.to(device, non_blocking=True)
+            y_log = y_log.to(device, non_blocking=True)
+            y = torch.expm1(y_log.float())
+
+            run_base: list[torch.Tensor] = []
+            run_ttt: list[torch.Tensor] = []
+            for run_idx, (models, params_list) in enumerate(zip(run_models, run_params)):
+                base_preds_models: list[torch.Tensor] = []
+                ttt_preds_models: list[torch.Tensor] = []
+                for model_idx, (model, params) in enumerate(zip(models, params_list)):
+                    with torch.no_grad(), autocast_context(device, dtype=trainable_dtype):
+                        p_base = _forward_model(model, x)
+                    base_preds_models.append(p_base)
+
+                    if use_ttt and params:
+                        snap = [p.detach().clone() for p in params]
+                        for step_idx in range(int(steps)):
+                            ctx = dict(
+                                device=device,
+                                trainable_dtype=trainable_dtype,
+                                backbone_dtype=backbone_dtype,
+                                fold_idx=int(fold_idx),
+                                model_idx=int(model_idx),
+                                run_idx=int(run_idx),
+                                batch_idx=int(batch_idx),
+                                step_idx=int(step_idx),
+                            )
+                            with torch.enable_grad(), autocast_context(device, dtype=trainable_dtype):
+                                loss = task(model, x, ctx)
+                                if isinstance(loss, (tuple, list)):
+                                    loss = loss[0]
+                                loss = loss.float()
+                                if beta > 0.0:
+                                    reg = torch.zeros((), device=x.device)
+                                    for p, s in zip(params, snap):
+                                        reg = reg + (p - s).pow(2).mean()
+                                    loss = loss + float(beta) * reg
+                            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+                            with torch.no_grad():
+                                for p, g in zip(params, grads):
+                                    if g is not None:
+                                        p.add_(g, alpha=-float(lr))
+                        if hasattr(model, "set_train"):
+                            model.set_train(False)
+                        model.eval()
+                        with torch.no_grad(), autocast_context(device, dtype=trainable_dtype):
+                            p_ttt = _forward_model(model, x)
+                        with torch.no_grad():
+                            for p, s in zip(params, snap):
+                                p.copy_(s)
+                    else:
+                        p_ttt = p_base
+                    ttt_preds_models.append(p_ttt)
+
+                run_base.append(_agg_stack(base_preds_models, inner_agg))
+                run_ttt.append(_agg_stack(ttt_preds_models, inner_agg))
+
+            p_base = _agg_stack(run_base, outer_agg)
+            p_ttt = _agg_stack(run_ttt, outer_agg)
+            _wr2_stats_update(stats_base, y, p_base, w_vec)
+            _wr2_stats_update(stats_ttt, y, p_ttt, w_vec)
+
+        return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt)
+
+    results: list[dict[str, Any]] = []
+    for sweep in sweeps:
+        task = sweep.get("task")
+        if task is None:
+            raise ValueError("Each sweep must include a 'task'.")
+        name = str(sweep.get("name", getattr(task, "name", task.__class__.__name__)))
+        param_spec = sweep.get("params")
+        steps = int(sweep.get("steps", 0))
+        lr = float(sweep.get("lr", 0.0))
+        beta = float(sweep.get("beta", 0.0))
+        bs = int(sweep.get("batch_size", batch_size))
+
+        fold_base: list[float] = []
+        fold_ttt: list[float] = []
+        fold_delta: list[float] = []
+
+        for fold_idx, (_, va_idx) in enumerate(cv_iter):
+            fold_runs: list[list[dict[str, Any]]] = []
+            for run in runs:
+                fold_states = [s for s in run if int(s.get("fold_idx", -1)) == int(fold_idx)]
+                if not fold_states:
+                    raise ValueError(f"Missing fold {fold_idx} in checkpoint states.")
+                fold_runs.append(fold_states)
+
+            base_score, ttt_score = _eval_fold(
+                fold_runs,
+                va_idx,
+                int(fold_idx),
+                task,
+                param_spec,
+                steps,
+                lr,
+                beta,
+                bs,
+            )
+            fold_base.append(float(base_score))
+            fold_ttt.append(float(ttt_score))
+            fold_delta.append(float(ttt_score - base_score))
+
+        mean_base = float(sum(fold_base) / max(len(fold_base), 1))
+        mean_ttt = float(sum(fold_ttt) / max(len(fold_ttt), 1))
+        mean_delta = float(sum(fold_delta) / max(len(fold_delta), 1))
+
+        results.append(
+            dict(
+                name=name,
+                steps=steps,
+                lr=lr,
+                beta=beta,
+                batch_size=int(bs),
+                inner_agg=str(inner_agg),
+                outer_agg=str(outer_agg),
+                fold_base=fold_base,
+                fold_ttt=fold_ttt,
+                fold_delta=fold_delta,
+                mean_base=mean_base,
+                mean_ttt=mean_ttt,
+                mean_delta=mean_delta,
+            )
+        )
+
+    return results
