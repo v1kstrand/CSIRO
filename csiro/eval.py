@@ -41,6 +41,19 @@ def _flatten_states(states: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_runs(states: Any) -> list[list[dict[str, Any]]]:
+    def _is_fold_list(run: Any) -> bool:
+        if not isinstance(run, list) or not run:
+            return False
+        fold_ids = set()
+        for s in run:
+            if not isinstance(s, dict) or "fold_idx" not in s:
+                return False
+            try:
+                fold_ids.add(int(s["fold_idx"]))
+            except Exception:
+                return False
+        return len(fold_ids) == 1
+
     if _is_state_dict(states):
         return [[states]]
     if isinstance(states, dict) and "seed_results" in states:
@@ -60,6 +73,9 @@ def _normalize_runs(states: Any) -> list[list[dict[str, Any]]]:
         if isinstance(states[0], dict):
             return [states]
         if isinstance(states[0], list):
+            if all(_is_fold_list(run) for run in states):
+                flat = [s for run in states for s in run]
+                return [flat]
             return [list(run) for run in states]
     return [_flatten_states(states)]
 

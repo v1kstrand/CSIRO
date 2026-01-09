@@ -376,11 +376,7 @@ def train_one_fold(
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
                 log_phys = comet_exp is not None and int(bi) == 0
-                loss = criterion(p_log, y_log) + phys_criterion(
-                    p_log,
-                    comet_exp=comet_exp if log_phys else None,
-                    step=int(k),
-                )
+                loss = criterion(p_log, y_log) 
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
