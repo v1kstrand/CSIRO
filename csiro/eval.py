@@ -677,7 +677,7 @@ def ttt_sweep_cv(
         lr: float,
         beta: float,
         bs: int,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, float, float]:
         subset = Subset(dataset, va_idx)
         tta_n = _get_tta_n(subset)
         tile_n = 2
@@ -700,6 +700,9 @@ def ttt_sweep_cv(
         use_ttt = steps > 0 and lr > 0.0
         stats_base = _wr2_stats_init(device)
         stats_ttt = _wr2_stats_init(device)
+        ssl_sum = 0.0
+        reg_sum = 0.0
+        ssl_n = 0
 
         if outer_agg == "flatten":
             flat_states = [s for run in fold_runs for s in run]
@@ -740,15 +743,18 @@ def ttt_sweep_cv(
                                 step_idx=int(step_idx),
                             )
                             with torch.enable_grad(), autocast_context(device, dtype=trainable_dtype):
-                                loss = task(model, x, ctx)
-                                if isinstance(loss, (tuple, list)):
-                                    loss = loss[0]
-                                loss = loss.float()
+                                loss_task = task(model, x, ctx)
+                                if isinstance(loss_task, (tuple, list)):
+                                    loss_task = loss_task[0]
+                                loss_task = loss_task.float()
+                                reg_val = torch.zeros((), device=x.device)
                                 if beta > 0.0:
-                                    reg = torch.zeros((), device=x.device)
                                     for p, s in zip(params, snap):
-                                        reg = reg + (p - s).pow(2).mean()
-                                    loss = loss + float(beta) * reg
+                                        reg_val = reg_val + (p - s).pow(2).mean()
+                                loss = loss_task + float(beta) * reg_val
+                            ssl_sum += float(loss_task.detach().item())
+                            reg_sum += float((float(beta) * reg_val).detach().item())
+                            ssl_n += 1
                             grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
                             with torch.no_grad():
                                 for p, g in zip(params, grads):
@@ -771,7 +777,9 @@ def ttt_sweep_cv(
                 _wr2_stats_update(stats_base, y, p_base, w_vec)
                 _wr2_stats_update(stats_ttt, y, p_ttt, w_vec)
 
-            return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt)
+            mean_ssl = ssl_sum / max(ssl_n, 1)
+            mean_reg = reg_sum / max(ssl_n, 1)
+            return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt), float(mean_ssl), float(mean_reg)
 
         run_models: list[list[torch.nn.Module]] = []
         run_params: list[list[list[torch.nn.Parameter]]] = []
@@ -817,15 +825,18 @@ def ttt_sweep_cv(
                                 step_idx=int(step_idx),
                             )
                             with torch.enable_grad(), autocast_context(device, dtype=trainable_dtype):
-                                loss = task(model, x, ctx)
-                                if isinstance(loss, (tuple, list)):
-                                    loss = loss[0]
-                                loss = loss.float()
+                                loss_task = task(model, x, ctx)
+                                if isinstance(loss_task, (tuple, list)):
+                                    loss_task = loss_task[0]
+                                loss_task = loss_task.float()
+                                reg_val = torch.zeros((), device=x.device)
                                 if beta > 0.0:
-                                    reg = torch.zeros((), device=x.device)
                                     for p, s in zip(params, snap):
-                                        reg = reg + (p - s).pow(2).mean()
-                                    loss = loss + float(beta) * reg
+                                        reg_val = reg_val + (p - s).pow(2).mean()
+                                loss = loss_task + float(beta) * reg_val
+                            ssl_sum += float(loss_task.detach().item())
+                            reg_sum += float((float(beta) * reg_val).detach().item())
+                            ssl_n += 1
                             grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
                             with torch.no_grad():
                                 for p, g in zip(params, grads):
@@ -851,7 +862,9 @@ def ttt_sweep_cv(
             _wr2_stats_update(stats_base, y, p_base, w_vec)
             _wr2_stats_update(stats_ttt, y, p_ttt, w_vec)
 
-        return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt)
+        mean_ssl = ssl_sum / max(ssl_n, 1)
+        mean_reg = reg_sum / max(ssl_n, 1)
+        return _wr2_from_stats(stats_base), _wr2_from_stats(stats_ttt), float(mean_ssl), float(mean_reg)
 
     results: list[dict[str, Any]] = []
     for sweep in tqdm(sweeps, desc="TTT sweeps"):
@@ -868,6 +881,8 @@ def ttt_sweep_cv(
         fold_base: list[float] = []
         fold_ttt: list[float] = []
         fold_delta: list[float] = []
+        fold_ssl: list[float] = []
+        fold_reg: list[float] = []
 
         fold_iter = tqdm(cv_iter, desc=f"{name} folds", leave=False)
         for fold_idx, (_, va_idx) in enumerate(fold_iter):
@@ -878,7 +893,7 @@ def ttt_sweep_cv(
                     raise ValueError(f"Missing fold {fold_idx} in checkpoint states.")
                 fold_runs.append(fold_states)
 
-            base_score, ttt_score = _eval_fold(
+            base_score, ttt_score, ssl_mean, reg_mean = _eval_fold(
                 fold_runs,
                 va_idx,
                 int(fold_idx),
@@ -892,10 +907,14 @@ def ttt_sweep_cv(
             fold_base.append(float(base_score))
             fold_ttt.append(float(ttt_score))
             fold_delta.append(float(ttt_score - base_score))
+            fold_ssl.append(float(ssl_mean))
+            fold_reg.append(float(reg_mean))
 
         mean_base = float(sum(fold_base) / max(len(fold_base), 1))
         mean_ttt = float(sum(fold_ttt) / max(len(fold_ttt), 1))
         mean_delta = float(sum(fold_delta) / max(len(fold_delta), 1))
+        mean_ssl = float(sum(fold_ssl) / max(len(fold_ssl), 1))
+        mean_reg = float(sum(fold_reg) / max(len(fold_reg), 1))
 
         results.append(
             dict(
@@ -909,9 +928,13 @@ def ttt_sweep_cv(
                 fold_base=fold_base,
                 fold_ttt=fold_ttt,
                 fold_delta=fold_delta,
+                fold_ssl_loss=fold_ssl,
+                fold_reg_loss=fold_reg,
                 mean_base=mean_base,
                 mean_ttt=mean_ttt,
                 mean_delta=mean_delta,
+                mean_ssl_loss=mean_ssl,
+                mean_reg_loss=mean_reg,
             )
         )
 
