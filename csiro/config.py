@@ -84,8 +84,6 @@ DEFAULTS: dict[str, Any] = dict(
     cutout=0.0,
     to_gray=0.0,
     mixup=(0.0, 0.2),
-    rdrop=0.0,
-    ttt=dict(steps=0, lr=1e-4, beta=0.0),
     val_bs=None,
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,

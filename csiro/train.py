@@ -152,7 +152,6 @@ def train_one_fold(
     val_freq: int = 1,
     backbone_size: str | None = None,
     mixup: tuple[float, float] | None = None,
-    rdrop: float | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -188,9 +187,6 @@ def train_one_fold(
         raise ValueError("mixup must be a (p, alpha) tuple.")
     mixup_p = float(mixup[0])
     mixup_alpha = float(mixup[1])
-    if rdrop is None:
-        rdrop = DEFAULTS.get("rdrop", 0.0)
-    rdrop_w = float(rdrop)
 
     if backbone_size is None:
         backbone_size = str(DEFAULTS.get("backbone_size", "b"))
@@ -233,7 +229,6 @@ def train_one_fold(
 
         model.set_train(True)
         running = 0.0
-        running_rd = 0.0
         n_seen = 0
 
         for bi, (x, y_log) in enumerate(dl_tr):
@@ -257,14 +252,8 @@ def train_one_fold(
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
-                p_log2 = model(x) if rdrop_w > 0.0 else None
                 loss_main = criterion(p_log, y_log)
-                loss_rdrop = (
-                    ((p_log.float() - p_log2.float()) ** 2).mean()
-                    if p_log2 is not None
-                    else torch.zeros((), device=p_log.device)
-                )
-                loss = loss_main + (float(rdrop_w) * loss_rdrop)
+                loss = loss_main
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -281,11 +270,9 @@ def train_one_fold(
 
             bs = int(x.size(0))
             running += float(loss_main.detach().item()) * bs
-            running_rd += float(loss_rdrop.detach().item()) * bs
             n_seen += bs
 
         train_loss = running / max(int(n_seen), 1)
-        train_rd_loss = running_rd / max(int(n_seen), 1)
         do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
         score = None
         if do_eval:
@@ -294,7 +281,6 @@ def train_one_fold(
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
             p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
-            p[f"x_train_rdrop_cv{curr_fold}_m{model_idx}"] = float(train_rd_loss)
             if score is not None:
                 p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
             comet_exp.log_metrics(p, step=int(ep))
@@ -375,7 +361,6 @@ def train_one_fold(
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 p_log = model(x)
-                log_phys = comet_exp is not None and int(bi) == 0
                 loss = criterion(p_log, y_log) 
 
             if scaler.is_enabled():
@@ -451,7 +436,6 @@ def eval_global_wr2_ensemble(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     tiled_inp: bool = False,
-    ttt: dict[str, Any] | tuple[int, float, float] | None = None,
     comet_exp: Any | None = None,
     curr_fold: int | None = None,
 ) -> float:
@@ -471,53 +455,6 @@ def eval_global_wr2_ensemble(
     elif isinstance(trainable_dtype, str):
         trainable_dtype = parse_dtype(trainable_dtype)
 
-    if ttt is None:
-        ttt = DEFAULTS.get("ttt", {})
-    if isinstance(ttt, dict):
-        ttt_steps = int(ttt.get("steps", 0))
-        ttt_lr = float(ttt.get("lr", 1e-4))
-        ttt_beta = float(ttt.get("beta", 0.0))
-    elif isinstance(ttt, (list, tuple)) and len(ttt) == 3:
-        ttt_steps = int(ttt[0])
-        ttt_lr = float(ttt[1])
-        ttt_beta = float(ttt[2])
-    else:
-        raise ValueError("ttt must be a dict or (steps, lr, beta) tuple.")
-
-    def _snapshot_params(params: list[torch.nn.Parameter]) -> list[torch.Tensor]:
-        return [p.detach().clone() for p in params]
-
-    def _restore_params(params: list[torch.nn.Parameter], snap: list[torch.Tensor]) -> None:
-        with torch.no_grad():
-            for p, s in zip(params, snap):
-                p.copy_(s)
-
-    def _ttt_update(model: torch.nn.Module, x: torch.Tensor, params: list[torch.nn.Parameter]) -> list[torch.Tensor] | None:
-        if ttt_steps <= 0 or ttt_lr <= 0.0 or not params:
-            return None
-        snap = _snapshot_params(params)
-        if hasattr(model, "set_train"):
-            model.set_train(True)
-        for _ in range(int(ttt_steps)):
-            with autocast_context(device, dtype=trainable_dtype):
-                p1 = model(x)
-                p2 = model(x)
-                loss = ((p1.float() - p2.float()) ** 2).mean()
-                if ttt_beta > 0.0:
-                    reg = torch.zeros((), device=x.device)
-                    for p, s in zip(params, snap):
-                        reg = reg + (p - s).pow(2).mean()
-                    loss = loss + float(ttt_beta) * reg
-            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
-            with torch.no_grad():
-                for p, g in zip(params, grads):
-                    if g is not None:
-                        p.add_(g, alpha=-float(ttt_lr))
-        if hasattr(model, "set_train"):
-            model.set_train(False)
-        return snap
-
-    use_ttt = ttt_steps > 0 and ttt_lr > 0.0
     ctx = autocast_context(device, dtype=trainable_dtype)
 
     for batch in dl_va:
@@ -531,11 +468,6 @@ def eval_global_wr2_ensemble(
 
         preds_models: list[torch.Tensor] = []
         for model in models:
-            snap = None
-            if use_ttt:
-                params = _trainable_params_list(model)
-                with torch.enable_grad():
-                    snap = _ttt_update(model, x, params)
             with torch.no_grad(), ctx:
                 if tiled_inp:
                     if x.ndim != 5:
@@ -555,8 +487,6 @@ def eval_global_wr2_ensemble(
                     preds_models.append(p)
                 else:
                     raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
-            if snap is not None:
-                _restore_params(_trainable_params_list(model), snap)
 
         p_ens = _agg_stack(preds_models, inner_agg)
 
@@ -629,9 +559,8 @@ def run_groupkfold_cv(
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
     to_gray_p = float(train_kwargs.pop("to_gray", DEFAULTS.get("to_gray", 0.0)))
     mixup_cfg = train_kwargs.get("mixup", DEFAULTS.get("mixup", (0.0, 0.0)))
-    rdrop_cfg = train_kwargs.get("rdrop", DEFAULTS.get("rdrop", 0.0))
+    train_kwargs.pop("rdrop", None)
     val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
-    ttt_cfg = train_kwargs.pop("ttt", DEFAULTS.get("ttt", {}))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
     jitter_tfms = build_color_jitter_sweep(
@@ -817,7 +746,6 @@ def run_groupkfold_cv(
                 comet_exp=comet_exp,
                 curr_fold=int(fold_idx),
                 tiled_inp=bool(tiled_inp),
-                ttt=ttt_cfg,
             )
             fold_scores.append(float(fold_score))
             _save_cv_state(False, int(fold_idx))
