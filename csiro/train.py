@@ -28,8 +28,7 @@ from .losses import WeightedMSELoss
 from .metrics import eval_global_wr2
 from .model import DINOv3Regressor, TiledDINOv3Regressor
 from .transforms import base_train_comp, post_tfms
-from .utils import build_color_jitter_sweep
-
+from .utils import build_color_jitter_sweep, filter_kwargs
 
 def cos_sin_lr(ep: int, epochs: int, lr_start: float, lr_final: float) -> float:
     if epochs <= 1:
@@ -554,11 +553,11 @@ def run_groupkfold_cv(
         raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
 
     org_train_kwargs = train_kwargs.copy()
+    inp_train_kwargs = filter_kwargs(train_one_fold, org_train_kwargs)
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
     to_gray_p = float(train_kwargs.pop("to_gray", DEFAULTS.get("to_gray", 0.0)))
-    mixup_cfg = train_kwargs.get("mixup", DEFAULTS.get("mixup", (0.0, 0.0)))
     train_kwargs.pop("rdrop", None)
     val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
@@ -681,7 +680,7 @@ def run_groupkfold_cv(
                     backbone_dtype=backbone_dtype,
                     trainable_dtype=trainable_dtype,
                     return_state=True,
-                    **train_kwargs,
+                    **inp_train_kwargs,
                 )
                 if isinstance(result, float) and math.isnan(result):
                     return
