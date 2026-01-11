@@ -19,3 +19,25 @@ class WeightedMSELoss(nn.Module):
         if self.normalize:
             loss = loss / (self.w.sum() + 1e-12)
         return loss.mean()
+
+
+class WeightedSmoothL1Loss(nn.Module):
+    def __init__(self, weights=DEFAULT_LOSS_WEIGHTS, *, beta: float = 1.0, normalize: bool = True):
+        super().__init__()
+        w = torch.as_tensor(weights, dtype=torch.float32)
+        self.register_buffer("w", w)
+        self.beta = float(beta)
+        self.normalize = normalize
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        w = self.w.view(1, -1)
+        err = torch.nn.functional.smooth_l1_loss(
+            pred,
+            target,
+            reduction="none",
+            beta=self.beta,
+        )
+        loss = (err * w).sum(dim=-1)
+        if self.normalize:
+            loss = loss / (self.w.sum() + 1e-12)
+        return loss.mean()

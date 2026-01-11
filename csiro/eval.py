@@ -18,8 +18,46 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
-from .model import DINOv3Regressor, TiledDINOv3Regressor
+from .model import (
+    DINOv3Regressor,
+    DINOv3Regressor3,
+    TiledDINOv3Regressor,
+    TiledDINOv3Regressor3,
+)
 from .transforms import post_tfms
+
+def _normalize_pred_space(pred_space: str) -> str:
+    s = str(pred_space).strip().lower()
+    if s in ("log", "log1p"):
+        return "log"
+    if s in ("gram", "grams", "linear"):
+        return "gram"
+    raise ValueError(f"Unknown pred_space: {pred_space}")
+
+def _pred_to_grams(pred: torch.Tensor, pred_space: str, *, clamp: bool = True) -> torch.Tensor:
+    if pred_space == "gram":
+        out = pred.float()
+    else:
+        out = torch.expm1(pred.float())
+    return out.clamp_min(0.0) if clamp else out
+
+def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
+    name = str(model_name or "").strip().lower()
+    if not name:
+        return TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
+    if name in ("tiled_base", "tiled"):
+        if not tiled_inp:
+            raise ValueError("model_name='tiled_base' requires tiled_inp=True.")
+        return TiledDINOv3Regressor
+    if name in ("tiled_sum3", "tiled_mass3", "tiled_3sum", "tiled_3"):
+        if not tiled_inp:
+            raise ValueError("model_name='tiled_sum3' requires tiled_inp=True.")
+        return TiledDINOv3Regressor3
+    if name in ("base", "default"):
+        return DINOv3Regressor if not tiled_inp else TiledDINOv3Regressor
+    if name in ("sum3", "mass3", "3sum"):
+        return DINOv3Regressor3 if not tiled_inp else TiledDINOv3Regressor3
+    raise ValueError(f"Unknown model_name: {model_name}")
 
 
 def _is_state_dict(state: Any) -> bool:
@@ -148,18 +186,29 @@ def _build_model_from_state(
     backbone_dtype: torch.dtype | None = None,
 ):
     use_tiled = bool(state.get("tiled_inp", False))
-    model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
+    model_name = str(state.get("model_name", "")).strip().lower()
+    model_cls = _resolve_model_class(model_name or None, use_tiled)
     backbone_size = str(state.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
     neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
-    model = model_cls(
-        backbone,
+    pred_space = _normalize_pred_space(state.get("pred_space", DEFAULTS.get("pred_space", "log")))
+    head_style = str(state.get("head_style", DEFAULTS.get("head_style", "single"))).strip().lower()
+    if pred_space == "gram" and model_cls in (DINOv3Regressor, TiledDINOv3Regressor):
+        raise ValueError("pred_space='gram' is only supported for the 3-output model variants.")
+    model_kwargs = dict(
+        backbone=backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
         depth=int(state["head_depth"]),
         num_neck=int(state["num_neck"]),
         neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
-    ).to(device)
+        pred_space=pred_space,
+    )
+    if model_cls in (DINOv3Regressor3, TiledDINOv3Regressor3):
+        model_kwargs["head_style"] = head_style
+    model = model_cls(**model_kwargs).to(device)
+    model.model_name = model_name or ("tiled_base" if use_tiled else "base")
+    model.pred_space = pred_space
     parts = state.get("parts")
     if isinstance(parts, dict):
         for name in ("neck", "head", "norm"):
@@ -294,13 +343,15 @@ def predict_ensemble(
                 with torch.no_grad(), ctx:
                     if x.ndim == 5:
                         x_tta, t = _split_tta_batch(x)
-                        p_log = model(x_tta).float()
-                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p_raw = model(x_tta).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
                         p = p.view(x.size(0), int(t), -1)
                         preds_models.append(_agg_tta(p, tta_agg))
                     elif x.ndim == 4:
-                        p_log = model(x).float()
-                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p_raw = model(x).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
                         preds_models.append(p)
                     else:
                         raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
@@ -433,13 +484,15 @@ def predict_ensemble_tiled(
                         if tiles != 2:
                             raise ValueError(f"Expected tiles=2, got {tiles}.")
                         x_tta = x.view(b * t, tiles, c, h, w)
-                        p_log = model(x_tta).float()
-                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p_raw = model(x_tta).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
                         p = p.view(b, t, -1)
                         preds_models.append(_agg_tta(p, tta_agg))
                     elif x.ndim == 5:
-                        p_log = model(x).float()
-                        p = torch.expm1(p_log).clamp_min(0.0)
+                        p_raw = model(x).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
                         preds_models.append(p)
                     else:
                         raise ValueError(f"Expected [B,2,C,H,W] or [B,T,2,C,H,W], got {tuple(x.shape)}")
@@ -564,13 +617,15 @@ def ttt_sweep_cv(
             if tiles != 2:
                 raise ValueError(f"Expected tiles=2, got {tiles}.")
             x_tta = x.view(b * t, tiles, c, h, w)
-            p_log = model(x_tta).float()
-            p = torch.expm1(p_log).clamp_min(0.0)
+            p_raw = model(x_tta).float()
+            pred_space = getattr(model, "pred_space", "log")
+            p = _pred_to_grams(p_raw, pred_space, clamp=True)
             p = p.view(b, t, -1)
             return _agg_tta(p, tta_agg)
         if x.ndim == 5:
-            p_log = model(x).float()
-            return torch.expm1(p_log).clamp_min(0.0)
+            p_raw = model(x).float()
+            pred_space = getattr(model, "pred_space", "log")
+            return _pred_to_grams(p_raw, pred_space, clamp=True)
         raise ValueError(f"Expected tiled batch [B,2,C,H,W] or [B,T,2,C,H,W], got {tuple(x.shape)}")
 
     def _eval_fold(

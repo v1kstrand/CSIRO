@@ -24,9 +24,9 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
-from .losses import WeightedMSELoss
+from .losses import WeightedMSELoss, WeightedSmoothL1Loss
 from .metrics import eval_global_wr2
-from .model import DINOv3Regressor, TiledDINOv3Regressor
+from .model import DINOv3Regressor, DINOv3Regressor3, TiledDINOv3Regressor, TiledDINOv3Regressor3
 from .transforms import base_train_comp, post_tfms
 from .utils import build_color_jitter_sweep, filter_kwargs
 
@@ -35,6 +35,39 @@ def cos_sin_lr(ep: int, epochs: int, lr_start: float, lr_final: float) -> float:
         return lr_final
     t = (ep - 1) / (epochs - 1)
     return lr_final + 0.5 * (lr_start - lr_final) * (1.0 + math.cos(math.pi * t))
+
+def _normalize_pred_space(pred_space: str) -> str:
+    s = str(pred_space).strip().lower()
+    if s in ("log", "log1p"):
+        return "log"
+    if s in ("gram", "grams", "linear"):
+        return "gram"
+    raise ValueError(f"Unknown pred_space: {pred_space}")
+
+def _pred_to_grams(pred: torch.Tensor, pred_space: str, *, clamp: bool = True) -> torch.Tensor:
+    if pred_space == "gram":
+        out = pred.float()
+    else:
+        out = torch.expm1(pred.float())
+    return out.clamp_min(0.0) if clamp else out
+
+def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
+    name = str(model_name or "").strip().lower()
+    if not name:
+        return TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
+    if name in ("tiled_base", "tiled"):
+        if not tiled_inp:
+            raise ValueError("model_name='tiled_base' requires tiled_inp=True.")
+        return TiledDINOv3Regressor
+    if name in ("tiled_sum3", "tiled_mass3", "tiled_3sum", "tiled_3"):
+        if not tiled_inp:
+            raise ValueError("model_name='tiled_sum3' requires tiled_inp=True.")
+        return TiledDINOv3Regressor3
+    if name in ("base", "default"):
+        return DINOv3Regressor if not tiled_inp else TiledDINOv3Regressor
+    if name in ("sum3", "mass3", "3sum"):
+        return DINOv3Regressor3 if not tiled_inp else TiledDINOv3Regressor3
+    raise ValueError(f"Unknown model_name: {model_name}")
 
 
 def set_optimizer_lr(opt, lr: float) -> None:
@@ -83,18 +116,28 @@ def _build_model_from_state(
     backbone_dtype: torch.dtype | None = None,
 ):
     use_tiled = bool(state.get("tiled_inp", False))
-    model_cls = TiledDINOv3Regressor if use_tiled else DINOv3Regressor
+    model_name = str(state.get("model_name", "")).strip().lower()
+    model_cls = _resolve_model_class(model_name or None, use_tiled)
     backbone_size = str(state.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
     neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
-    model = model_cls(
-        backbone,
+    pred_space = _normalize_pred_space(state.get("pred_space", DEFAULTS.get("pred_space", "log")))
+    head_style = str(state.get("head_style", DEFAULTS.get("head_style", "single"))).strip().lower()
+    if pred_space == "gram" and model_cls in (DINOv3Regressor, TiledDINOv3Regressor):
+        raise ValueError("pred_space='gram' is only supported for the 3-output model variants.")
+    model_kwargs = dict(
+        backbone=backbone,
         hidden=int(state["head_hidden"]),
         drop=float(state["head_drop"]),
         depth=int(state["head_depth"]),
         num_neck=int(state["num_neck"]),
         neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
-    ).to(device)
+        pred_space=pred_space,
+    )
+    if model_cls in (DINOv3Regressor3, TiledDINOv3Regressor3):
+        model_kwargs["head_style"] = head_style
+    model = model_cls(**model_kwargs).to(device)
+    model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
     return model
 
@@ -151,6 +194,11 @@ def train_one_fold(
     val_freq: int = 1,
     backbone_size: str | None = None,
     mixup: tuple[float, float] | None = None,
+    model_name: str | None = None,
+    head_style: str | None = None,
+    pred_space: str | None = None,
+    loss_weights: list[float] | tuple[float, ...] | None = None,
+    huber_beta: float | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -192,21 +240,43 @@ def train_one_fold(
     if neck_num_heads is None:
         neck_num_heads = int(neck_num_heads_for(backbone_size))
 
-    model_cls = TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
-    model = model_cls(
-        backbone,
+    if model_name is None:
+        model_name = str(DEFAULTS.get("model_name", "")).strip()
+    model_cls = _resolve_model_class(model_name or None, tiled_inp)
+    if pred_space is None:
+        pred_space = DEFAULTS.get("pred_space", "log")
+    pred_space = _normalize_pred_space(pred_space)
+    if pred_space == "gram" and model_cls in (DINOv3Regressor, TiledDINOv3Regressor):
+        raise ValueError("pred_space='gram' is only supported for the 3-output model variants.")
+    if head_style is None:
+        head_style = DEFAULTS.get("head_style", "single")
+    head_style = str(head_style).strip().lower()
+    model_kwargs = dict(
+        backbone=backbone,
         hidden=int(head_hidden),
         drop=float(head_drop),
         depth=int(head_depth),
         num_neck=int(num_neck),
         neck_num_heads=int(neck_num_heads),
         backbone_dtype=backbone_dtype,
-    ).to(device)
+        pred_space=pred_space,
+    )
+    if model_cls in (DINOv3Regressor3, TiledDINOv3Regressor3):
+        model_kwargs["head_style"] = head_style
+    model = model_cls(**model_kwargs).to(device)
     model.init()
+    model.model_name = model_name or ("tiled_base" if tiled_inp else "base")
 
-    w_loss = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32)
+    if loss_weights is None:
+        loss_weights = DEFAULTS.get("loss_weights", DEFAULT_LOSS_WEIGHTS)
+    w_loss = torch.as_tensor(loss_weights, dtype=torch.float32)
     eval_w = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
-    criterion = WeightedMSELoss(weights=w_loss).to(device)
+    if pred_space == "gram":
+        if huber_beta is None:
+            huber_beta = float(DEFAULTS.get("huber_beta", 1.0))
+        criterion = WeightedSmoothL1Loss(weights=w_loss, beta=float(huber_beta)).to(device)
+    else:
+        criterion = WeightedMSELoss(weights=w_loss).to(device)
     
     trainable_params = _trainable_params_list(model)
     
@@ -232,25 +302,31 @@ def train_one_fold(
         for bi, (x, y_log) in enumerate(dl_tr):
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
+            y_target = y_log
+            if pred_space == "gram":
+                y_target = torch.expm1(y_log.float())
             if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
                 if torch.rand((), device=x.device).item() < mixup_p:
                     perm = torch.randperm(int(x.size(0)), device=x.device)
                     x2 = x[perm]
-                    y2 = y_log[perm]
+                    y2 = y_target[perm]
                     lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((x.size(0),)).to(x.device)
                     lam_x = lam.view([x.size(0)] + [1] * (x.ndim - 1))
                     x = x * lam_x + x2 * (1.0 - lam_x)
 
-                    y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                    y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
                     lam_y = lam.view(x.size(0), 1)
-                    y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
-                    y_log = torch.log1p(y_mix)
+                    if pred_space == "log":
+                        y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                        y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
+                        y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
+                        y_target = torch.log1p(y_mix)
+                    else:
+                        y_target = y_target * lam_y + y2 * (1.0 - lam_y)
 
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
-                p_log = model(x)
-                loss_main = criterion(p_log, y_log)
+                pred = model(x)
+                loss_main = criterion(pred, y_target)
                 loss = loss_main
 
             if scaler.is_enabled():
@@ -355,11 +431,14 @@ def train_one_fold(
         for bi, (x, y_log) in enumerate(dl_tr):
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
+            y_target = y_log
+            if pred_space == "gram":
+                y_target = torch.expm1(y_log.float())
 
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
-                p_log = model(x)
-                loss = criterion(p_log, y_log) 
+                pred = model(x)
+                loss = criterion(pred, y_target) 
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -470,18 +549,21 @@ def eval_global_wr2_ensemble(
                 if tiled_inp:
                     if x.ndim != 5:
                         raise ValueError(f"Expected tiled batch [B,2,C,H,W], got {tuple(x.shape)}")
-                    p_log = model(x).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
+                    p_raw = model(x).float()
+                    pred_space = getattr(model, "pred_space", "log")
+                    p = _pred_to_grams(p_raw, pred_space, clamp=True)
                     preds_models.append(p)
                 elif x.ndim == 5:
                     x_tta, t = _split_tta_batch(x)
-                    p_log = model(x_tta).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
+                    p_raw = model(x_tta).float()
+                    pred_space = getattr(model, "pred_space", "log")
+                    p = _pred_to_grams(p_raw, pred_space, clamp=True)
                     p = p.view(x.size(0), int(t), -1)
                     preds_models.append(_agg_tta(p, tta_agg))
                 elif x.ndim == 4:
-                    p_log = model(x).float()
-                    p = torch.expm1(p_log).clamp_min(0.0)
+                    p_raw = model(x).float()
+                    pred_space = getattr(model, "pred_space", "log")
+                    p = _pred_to_grams(p_raw, pred_space, clamp=True)
                     preds_models.append(p)
                 else:
                     raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
@@ -561,6 +643,9 @@ def run_groupkfold_cv(
     val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
     tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
+    model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
+    pred_space = _normalize_pred_space(train_kwargs.get("pred_space", DEFAULTS.get("pred_space", "log")))
+    head_style = str(train_kwargs.get("head_style", DEFAULTS.get("head_style", "single"))).strip().lower()
     jitter_tfms = build_color_jitter_sweep(
         int(n_models),
         bcs_range=tuple(bcs_range),
@@ -687,22 +772,25 @@ def run_groupkfold_cv(
                         fold_idx=int(fold_idx),
                         model_idx=int(model_idx),
                         tiled_inp=bool(tiled_inp),
+                        model_name=str(model_name or ("tiled_base" if tiled_inp else "base")),
+                        pred_space=str(pred_space),
+                        head_style=str(head_style),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
                         head_hidden=int(train_kwargs["head_hidden"]),
                         head_depth=int(train_kwargs["head_depth"]),
                         head_drop=float(train_kwargs["head_drop"]),
-                    num_neck=int(train_kwargs["num_neck"]),
-                    neck_num_heads=int(
-                        train_kwargs.get(
-                            "neck_num_heads",
-                            neck_num_heads_for(
-                                str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
-                            ),
-                        )
-                    ),
-                    img_size=None if img_size is None else int(img_size),
-                    score=float(result["score"]),
+                        num_neck=int(train_kwargs["num_neck"]),
+                        neck_num_heads=int(
+                            train_kwargs.get(
+                                "neck_num_heads",
+                                neck_num_heads_for(
+                                    str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
+                                ),
+                            )
+                        ),
+                        img_size=None if img_size is None else int(img_size),
+                        score=float(result["score"]),
                         best_score=float(result["best_score"]),
                         swa_score=result["swa_score"],
                         best_state=result["best_state"],

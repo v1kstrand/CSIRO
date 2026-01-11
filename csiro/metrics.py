@@ -19,10 +19,14 @@ def eval_global_wr2(model, dl_va, w_vec: torch.Tensor, device: str | torch.devic
         for x, y_log in dl_va:
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
-            p_log = model(x).float()
-
+            p_raw = model(x).float()
             y = torch.expm1(y_log.float())
-            p = torch.expm1(p_log).clamp_min(0.0)
+            pred_space = getattr(model, "pred_space", "log")
+            if str(pred_space).strip().lower() == "gram":
+                p = p_raw
+            else:
+                p = torch.expm1(p_raw)
+            p = p.clamp_min(0.0)
 
             w = w5.expand_as(y)
             diff = y - p
