@@ -220,7 +220,6 @@ def train_one_fold(
 
     val_freq = max(1, int(val_freq))
     p_bar = tqdm(range(1, int(epochs) + 1))
-    steps_per_epoch = max(len(dl_tr), 1)
 
     for ep in p_bar:
         lr = cos_sin_lr(int(ep), int(epochs), float(lr_start), float(lr_final))
@@ -676,9 +675,6 @@ def run_groupkfold_cv(
                     comet_exp=comet_exp,
                     curr_fold=int(fold_idx),
                     model_idx=int(model_idx),
-                    tiled_inp=bool(tiled_inp),
-                    backbone_dtype=backbone_dtype,
-                    trainable_dtype=trainable_dtype,
                     return_state=True,
                     **inp_train_kwargs,
                 )
