@@ -22,6 +22,7 @@ DEFAULT_IMG_SIZE: int = 512
 DEFAULT_LOSS_WEIGHTS: tuple[float, float, float, float, float] = (0.1, 0.1, 0.1, 0.2, 0.5)
 
 DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
+DEFAULT_DINO_ROOT: str = os.getenv("DEFAULT_DINO_ROOT")
 DINO_B_WEIGHTS_PATH: str | None = os.getenv("DINO_B_WEIGHTS_PATH")
 DINO_L_WEIGHTS_PATH: str | None = os.getenv("DINO_L_WEIGHTS_PATH")
 

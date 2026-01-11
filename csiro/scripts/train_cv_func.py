@@ -12,11 +12,11 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from csiro.config import (
     DEFAULT_DATA_ROOT,
+    DEFAULT_DINO_ROOT,
     DEFAULTS,
     dino_hub_name,
     dino_weights_path_from_size,
     neck_num_heads_for,
-    parse_dtype,
 )
 from csiro.data import BiomassBaseCached, BiomassTiledCached, load_train_wide
 from csiro.train import run_groupkfold_cv
@@ -25,7 +25,7 @@ def train_cv(
     *,
     csv: str | None = None,
     root: str = DEFAULT_DATA_ROOT,
-    dino_repo: str | None = None,
+    dino_repo: str = DEFAULT_DINO_ROOT,
     dino_weights: str | None = None,
     model_size: str | None = None,  # "b" == ViT-Base
     plus: str = "",
@@ -36,8 +36,6 @@ def train_cv(
     cfg: dict[str, Any] = dict(DEFAULTS)
     if overrides:
         cfg.update(overrides)
-    if dino_repo is None:
-        raise ValueError("dino_repo must be provided.")
     device = str(cfg.get("device", "cuda"))
     if device.startswith("cuda") and not torch.cuda.is_available():
         device = "cpu"
