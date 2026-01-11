@@ -380,7 +380,10 @@ def train_one_fold(
 
     p_bar.close()
 
-    if (int(swa_epochs) <= 0) or (best_state is None):
+    if best_state is None:
+        best_state = _save_parts(model)
+        best_score = float(best_score)
+    if (int(swa_epochs) <= 0):
         if save_path and best_state is not None:
             torch.save(best_state, save_path)
         if return_state:
