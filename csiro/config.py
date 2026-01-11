@@ -18,7 +18,6 @@ IMAGENET_MEAN: tuple[float, float, float] = (0.485, 0.456, 0.406)
 IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
 
 DEFAULT_SEED: int = 420
-DEFAULT_IMG_SIZE: int = 512
 DEFAULT_LOSS_WEIGHTS: tuple[float, float, float, float, float] = (0.1, 0.1, 0.1, 0.2, 0.5)
 
 DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
@@ -81,7 +80,7 @@ DEFAULTS: dict[str, Any] = dict(
     mixup=(0.0, 0.2),
     val_bs=None,
     comet_exp_name="csiro",
-    img_size=DEFAULT_IMG_SIZE,
+    img_size=512,
     img_preprocess=True,
     bcs_range=(0.2, 0.4),
     hue_range=(0.02, 0.08),
