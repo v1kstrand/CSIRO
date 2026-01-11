@@ -191,7 +191,7 @@ def train_one_fold(
     if backbone_size is None:
         backbone_size = str(DEFAULTS.get("backbone_size", "b"))
     if neck_num_heads is None:
-        neck_num_heads = int(DEFAULTS.get("neck_num_heads", neck_num_heads_for(backbone_size)))
+        neck_num_heads = int(neck_num_heads_for(backbone_size))
 
     model_cls = TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
     model = model_cls(
@@ -698,7 +698,14 @@ def run_groupkfold_cv(
                         head_depth=int(train_kwargs["head_depth"]),
                         head_drop=float(train_kwargs["head_drop"]),
                     num_neck=int(train_kwargs["num_neck"]),
-                    neck_num_heads=int(train_kwargs.get("neck_num_heads", DEFAULTS.get("neck_num_heads", 12))),
+                    neck_num_heads=int(
+                        train_kwargs.get(
+                            "neck_num_heads",
+                            neck_num_heads_for(
+                                str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
+                            ),
+                        )
+                    ),
                     img_size=None if img_size is None else int(img_size),
                     score=float(result["score"]),
                         best_score=float(result["best_score"]),

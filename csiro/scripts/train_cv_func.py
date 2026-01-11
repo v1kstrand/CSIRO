@@ -12,14 +12,8 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from csiro.config import (
     DEFAULT_DATA_ROOT,
-    DEFAULT_DINO_REPO_DIR,
-    DEFAULT_BACKBONE_SIZE,
-    DEFAULT_MODEL_SIZE,
-    DEFAULT_PLUS,
     DEFAULTS,
-    DINO_WEIGHTS_PATH,
     dino_hub_name,
-    dino_weights_path,
     dino_weights_path_from_size,
     neck_num_heads_for,
     parse_dtype,
@@ -31,10 +25,10 @@ def train_cv(
     *,
     csv: str | None = None,
     root: str = DEFAULT_DATA_ROOT,
-    dino_repo: str = DEFAULT_DINO_REPO_DIR,
+    dino_repo: str | None = None,
     dino_weights: str | None = None,
     model_size: str | None = None,  # "b" == ViT-Base
-    plus: str = DEFAULT_PLUS,
+    plus: str = "",
     overrides: dict[str, Any] | None = None,
     sweeps: dict = None
 ) -> Any:
@@ -42,8 +36,8 @@ def train_cv(
     cfg: dict[str, Any] = dict(DEFAULTS)
     if overrides:
         cfg.update(overrides)
-    if overrides is None or "neck_num_heads" not in overrides:
-        cfg["neck_num_heads"] = neck_num_heads_for(cfg.get("backbone_size", DEFAULT_BACKBONE_SIZE))
+    if dino_repo is None:
+        raise ValueError("dino_repo must be provided.")
     device = str(cfg.get("device", "cuda"))
     if device.startswith("cuda") and not torch.cuda.is_available():
         device = "cpu"
@@ -69,24 +63,26 @@ def train_cv(
     for sweep in sweeps:
         kwargs = dict(base_kwargs)
         kwargs.update({k: v for k, v in sweep.items()})
-        if "backbone_size" in kwargs and "neck_num_heads" not in kwargs:
+        if (
+            "backbone_size" in kwargs
+            and "neck_num_heads" not in kwargs
+            and int(kwargs.get("num_neck", 0)) > 0
+        ):
             kwargs["neck_num_heads"] = neck_num_heads_for(kwargs["backbone_size"])
         name_src = dict(sweep)
         name_src.pop("cv_resume", None)
         kwargs["config_name"] = "".join(c for c in str(name_src) if c.isalnum() or c in "_-")[:80]
 
         sweep_model_size = str(
-            kwargs.get("backbone_size", model_size or cfg.get("backbone_size", DEFAULT_MODEL_SIZE))
+            kwargs.get("backbone_size", model_size or cfg.get("backbone_size", "b"))
         )
         sweep_dino_weights = dino_weights
         if sweep_dino_weights is None:
             sweep_dino_weights = dino_weights_path_from_size(
-                str(kwargs.get("backbone_size", DEFAULT_BACKBONE_SIZE))
+                str(kwargs.get("backbone_size", "b"))
             )
         if sweep_dino_weights is None:
-            sweep_dino_weights = dino_weights_path(
-                repo_dir=dino_repo, model_size=sweep_model_size, plus=plus
-            )
+            raise ValueError("Set DINO_B_WEIGHTS_PATH or DINO_L_WEIGHTS_PATH for the chosen backbone_size.")
 
         cache_key = (str(sweep_model_size), str(sweep_dino_weights), str(plus))
         if cache_key not in backbone_cache:

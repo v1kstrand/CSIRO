@@ -197,68 +197,6 @@ def load_ensemble_states(pt_paths: list[str] | str) -> list[list[dict[str, Any]]
     return runs_all
 
 
-def _require(state: dict[str, Any], key: str) -> Any:
-    if key not in state:
-        raise ValueError(f"Missing '{key}' in checkpoint state.")
-    return state[key]
-
-
-def load_dinov3_regressor_from_pt(
-    pt_path: str,
-    backbone,
-    *,
-    device: str | torch.device = "cuda",
-    backbone_dtype: str | torch.dtype | None = None,
-    state_idx: int = 0,
-    seed: str | int | None = None,
-) -> DINOv3Regressor:
-    states_raw = load_states_from_pt(pt_path)
-    seed_states = _extract_seed_states(states_raw)
-    if not seed_states:
-        raise ValueError("No states found in checkpoint.")
-    if seed is None:
-        seed = sorted(seed_states.keys())[0]
-    seed_key = str(seed)
-    if seed_key not in seed_states:
-        raise KeyError(f"Seed '{seed}' not found in checkpoint.")
-    states = seed_states[seed_key]
-    if int(state_idx) >= len(states):
-        raise IndexError(f"state_idx {state_idx} out of range for {len(states)} states.")
-
-    state = states[int(state_idx)]
-    if backbone_dtype is None:
-        backbone_dtype = DEFAULTS["backbone_dtype"]
-    if isinstance(backbone_dtype, str):
-        backbone_dtype = parse_dtype(backbone_dtype)
-    backbone_size = str(state.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
-    neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
-
-    model = DINOv3Regressor(
-        backbone,
-        hidden=int(_require(state, "head_hidden")),
-        drop=float(_require(state, "head_drop")),
-        depth=int(_require(state, "head_depth")),
-        num_neck=int(_require(state, "num_neck")),
-        neck_num_heads=int(neck_num_heads),
-        backbone_dtype=backbone_dtype,
-    ).to(device)
-
-    parts = state.get("parts")
-    if isinstance(parts, dict):
-        for name in ("neck", "head", "norm"):
-            part = getattr(model, name, None)
-            if part is not None and name in parts:
-                part.load_state_dict(parts[name], strict=True)
-    else:
-        model.load_state_dict(state, strict=False)
-    if hasattr(model, "set_train"):
-        model.set_train(False)
-    model.eval()
-    return model
-
-
-
-
 def predict_ensemble(
     data,
     states: Any,
@@ -526,38 +464,6 @@ def predict_ensemble_tiled(
             preds_runs.append(_predict_with_models(models))
         return _agg_stack(preds_runs, outer_agg)
     raise ValueError(f"Unknown outer_agg: {outer_agg}")
-
-
-def predict_ensemble_from_pt(
-    data,
-    pt_path: str,
-    backbone,
-    *,
-    batch_size: int = 128,
-    num_workers: int | None = None,
-    device: str | torch.device = "cuda",
-    backbone_dtype: str | torch.dtype | None = None,
-    trainable_dtype: str | torch.dtype | None = None,
-    tta_agg: str = "mean",
-    inner_agg: str = "mean",
-    outer_agg: str = "flatten",
-    ttt: dict[str, Any] | tuple[int, float, float] | None = None,
-) -> torch.Tensor:
-    states = load_states_from_pt(pt_path)
-    return predict_ensemble(
-        data,
-        states=states,
-        backbone=backbone,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        device=device,
-        backbone_dtype=backbone_dtype,
-        trainable_dtype=trainable_dtype,
-        tta_agg=tta_agg,
-        inner_agg=inner_agg,
-        outer_agg=outer_agg,
-        ttt=ttt,
-    )
 
 
 def _wr2_stats_init(device: str | torch.device) -> dict[str, torch.Tensor]:
