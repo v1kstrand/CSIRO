@@ -76,6 +76,7 @@ DEFAULTS: dict[str, Any] = dict(
     val_bs=None,
     comet_exp_name="csiro",
     img_size=DEFAULT_IMG_SIZE,
+    img_preprocess=True,
     bcs_range=(0.2, 0.4),
     hue_range=(0.02, 0.08),
     tiled_inp=True,

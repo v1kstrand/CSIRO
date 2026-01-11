@@ -22,6 +22,32 @@ def _to_abs_path(root: str | None, p: str) -> str:
     return os.path.join(root, p)
 
 
+def _clean_image(img: Image.Image) -> Image.Image:
+    import cv2
+
+    arr = np.asarray(img)
+    if arr.ndim == 2:
+        arr = np.stack([arr, arr, arr], axis=-1)
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
+    h, w = arr.shape[:2]
+    arr = arr[: int(h * 0.90), :]
+    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+    lower = np.array([5, 150, 150], dtype=np.uint8)
+    upper = np.array([25, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
+    if int(mask.sum()) > 0:
+        arr = cv2.inpaint(arr, mask, 3, cv2.INPAINT_TELEA)
+    return Image.fromarray(arr)
+
+
+def _maybe_preprocess_image(img: Image.Image, enabled: bool) -> Image.Image:
+    if not enabled:
+        return img
+    return _clean_image(img)
+
+
 def load_train_wide(
     csv_path: str,
     *,
@@ -53,6 +79,7 @@ class BiomassBaseCached(Dataset):
         targets: Sequence[str] = TARGETS,
         img_size: int = 512,
         cache_images: bool = True,
+        img_preprocess: bool = False,
         pad_to_square: bool = True,
         pad_fill: int = 0,
     ):
@@ -60,6 +87,7 @@ class BiomassBaseCached(Dataset):
         y = self.df[list(targets)].values.astype(np.float32)
         self.y_log = np.log1p(y)
         self.targets = list(targets)
+        self.img_preprocess = bool(img_preprocess)
 
         if pad_to_square:
             from .transforms import PadToSquare
@@ -75,7 +103,8 @@ class BiomassBaseCached(Dataset):
         self.imgs: list[Image.Image] | None = [] if cache_images else None
         if cache_images:
             for p in self.df["abs_path"].tolist():
-                im = Image.open(p)
+                im = Image.open(p).convert("RGB")
+                im = _maybe_preprocess_image(im, self.img_preprocess)
                 im = self._pre(im)
                 self.imgs.append(im.copy())
                 im.close()
@@ -86,7 +115,9 @@ class BiomassBaseCached(Dataset):
     def __getitem__(self, i: int):
         if self.imgs is None:
             with Image.open(self.df.loc[i, "abs_path"]) as im0:
-                im = self._pre(im0).copy()
+                im = im0.convert("RGB")
+                im = _maybe_preprocess_image(im, self.img_preprocess)
+                im = self._pre(im).copy()
         else:
             im = self.imgs[i]
         y = torch.from_numpy(self.y_log[i])
@@ -101,11 +132,13 @@ class BiomassTiledCached(Dataset):
         targets: Sequence[str] = TARGETS,
         img_size: int = 512,
         cache_images: bool = True,
+        img_preprocess: bool = False,
     ):
         self.df = wide_df.reset_index(drop=True)
         y = self.df[list(targets)].values.astype(np.float32)
         self.y_log = np.log1p(y)
         self.targets = list(targets)
+        self.img_preprocess = bool(img_preprocess)
 
         self._pre = T.Compose(
             [
@@ -120,6 +153,7 @@ class BiomassTiledCached(Dataset):
             for p in self.df["abs_path"].tolist():
                 with Image.open(p) as im0:
                     im = im0.convert("RGB")
+                    im = _maybe_preprocess_image(im, self.img_preprocess)
                     left = im.crop((0, 0, 1000, 1000))
                     right = im.crop((1000, 0, 2000, 1000))
                     left = self._pre(left)
@@ -133,6 +167,7 @@ class BiomassTiledCached(Dataset):
         if self.tiles is None:
             with Image.open(self.df.loc[i, "abs_path"]) as im0:
                 im = im0.convert("RGB")
+                im = _maybe_preprocess_image(im, self.img_preprocess)
                 left = im.crop((0, 0, 1000, 1000))
                 right = im.crop((1000, 0, 2000, 1000))
                 left = self._pre(left)

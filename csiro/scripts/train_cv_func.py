@@ -96,11 +96,20 @@ def train_cv(
 
         kwargs["backbone"] = backbone_cache[cache_key]
         tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
+        img_preprocess = bool(kwargs.get("img_preprocess", cfg.get("img_preprocess", False)))
         if tiled_inp not in dataset_cache:
             if tiled_inp:
-                dataset_cache[tiled_inp] = BiomassTiledCached(wide_df, img_size=int(cfg["img_size"]))
+                dataset_cache[tiled_inp] = BiomassTiledCached(
+                    wide_df,
+                    img_size=int(cfg["img_size"]),
+                    img_preprocess=img_preprocess,
+                )
             else:
-                dataset_cache[tiled_inp] = BiomassBaseCached(wide_df, img_size=int(cfg["img_size"]))
+                dataset_cache[tiled_inp] = BiomassBaseCached(
+                    wide_df,
+                    img_size=int(cfg["img_size"]),
+                    img_preprocess=img_preprocess,
+                )
         kwargs["dataset"] = dataset_cache[tiled_inp]
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(
