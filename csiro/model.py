@@ -35,7 +35,64 @@ def _build_head(
     return nn.Sequential(*layers)
 
 
-class DINOv3Regressor(nn.Module):
+def _infer_feat_dim(backbone: nn.Module) -> int:
+    feat_dim = getattr(getattr(backbone, "norm", None), "normalized_shape", [None])[0]
+    if feat_dim is None:
+        raise ValueError("Could not infer feat_dim from backbone; pass feat_dim=... explicitly.")
+    return int(feat_dim)
+
+
+@torch.no_grad()
+def _backbone_tokens(backbone: nn.Module, x: torch.Tensor) -> tuple[torch.Tensor, Any]:
+    out = backbone(x)
+    rope = None
+    if isinstance(out, tuple) and len(out) == 2:
+        out, rope = out
+
+    tokens = out
+    if isinstance(out, dict):
+        if "x_prenorm" in out:
+            tokens = out["x_prenorm"]
+        elif "x_norm_clstoken" in out:
+            cls = out["x_norm_clstoken"]
+            if cls.ndim == 2:
+                cls = cls[:, None, :]
+            patch = out.get("x_norm_patchtokens", None)
+            if patch is not None:
+                tokens = torch.cat([cls, patch], dim=1)
+            else:
+                tokens = cls
+        else:
+            for k in ("x_norm_clstoken", "cls", "cls_token", "clstoken", "x"):
+                if k in out:
+                    tokens = out[k]
+                    break
+            else:
+                raise ValueError(f"Backbone returned dict with unknown keys: {list(out.keys())}")
+
+    if not isinstance(tokens, torch.Tensor):
+        raise TypeError(f"Backbone output must be a Tensor/dict/tuple, got: {type(out)!r}")
+
+    if tokens.ndim == 2:
+        tokens = tokens[:, None, :]
+    if tokens.ndim != 3:
+        raise ValueError(f"Expected tokens [B,T,D], got shape: {tuple(tokens.shape)}")
+    return tokens, rope
+
+
+def _init_modules(modules: list[nn.Module]) -> None:
+    for m in modules:
+        if isinstance(m, nn.Linear):
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.LayerNorm):
+            if getattr(m, "elementwise_affine", False):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+
+class TiledDINOv3Regressor(nn.Module):
     def __init__(
         self,
         backbone: nn.Module,
@@ -57,10 +114,7 @@ class DINOv3Regressor(nn.Module):
         self.backbone_grad = False
         self.pred_space = _normalize_pred_space(pred_space)
 
-        feat_dim = feat_dim or getattr(getattr(backbone, "norm", None), "normalized_shape", [None])[0]
-        if feat_dim is None:
-            raise ValueError("Could not infer feat_dim from backbone; pass feat_dim=... explicitly.")
-
+        feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():
             p.requires_grad_(False)
         self.backbone.eval()
@@ -68,7 +122,6 @@ class DINOv3Regressor(nn.Module):
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
 
-        self.neck: nn.ModuleList
         if int(num_neck) > 0:
             SelfAttentionBlock = _optional_import_self_attention_block()
             self.neck = nn.ModuleList(
@@ -77,251 +130,6 @@ class DINOv3Regressor(nn.Module):
         else:
             self.neck = nn.ModuleList()
 
-        self.head = _build_head(
-            in_dim=self.feat_dim,
-            hidden=int(hidden),
-            depth=int(depth),
-            drop=float(drop),
-            out_dim=int(out_dim),
-            norm_layer=norm_layer,
-        )
-        self.norm = norm_layer(self.feat_dim)
-
-    @torch.no_grad()
-    def _backbone_tokens(self, x: torch.Tensor) -> tuple[torch.Tensor, Any]:
-        out = self.backbone(x)
-        rope = None
-        if isinstance(out, tuple) and len(out) == 2:
-            out, rope = out
-
-        tokens = out
-        if isinstance(out, dict):
-            if "x_prenorm" in out:
-                tokens = out["x_prenorm"]
-            elif "x_norm_clstoken" in out:
-                cls = out["x_norm_clstoken"]
-                if cls.ndim == 2:
-                    cls = cls[:, None, :]
-                patch = out.get("x_norm_patchtokens", None)
-                if patch is not None:
-                    tokens = torch.cat([cls, patch], dim=1)
-                else:
-                    tokens = cls
-            else:
-                for k in ("x_norm_clstoken", "cls", "cls_token", "clstoken", "x"):
-                    if k in out:
-                        tokens = out[k]
-                        break
-                else:
-                    raise ValueError(f"Backbone returned dict with unknown keys: {list(out.keys())}")
-
-        if not isinstance(tokens, torch.Tensor):
-            raise TypeError(f"Backbone output must be a Tensor/dict/tuple, got: {type(out)!r}")
-
-        if tokens.ndim == 2:
-            tokens = tokens[:, None, :]
-        if tokens.ndim != 3:
-            raise ValueError(f"Expected tokens [B,T,D], got shape: {tuple(tokens.shape)}")
-        return tokens, rope
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.set_grad_enabled(self.backbone_grad):
-            with autocast_context(x.device, dtype=self.backbone_dtype):
-                tokens, rope = self._backbone_tokens(x)
-
-        for block in self.neck:
-            try:
-                tokens = block(tokens, rope)
-            except TypeError:
-                tokens = block(tokens)
-
-        cls = tokens[:, 0, :]
-        cls = self.norm(cls)
-        return self.head(cls)
-
-    def set_train(self, train: bool = True) -> None:
-        self.neck.train(train)
-        self.head.train(train)
-        self.norm.train(train)
-
-    def set_backbone_grad(self, train: bool = True) -> None:
-        self.backbone_grad = bool(train)
-
-    @torch.no_grad()
-    def init(self) -> None:
-        modules = [*self.head.modules(), *self.neck.modules(), *self.norm.modules()]
-        for m in modules:
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, mean=0.0, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
-                if getattr(m, "elementwise_affine", False):
-                    nn.init.ones_(m.weight)
-                    nn.init.zeros_(m.bias)
-
-
-class DINOv3Regressor3(DINOv3Regressor):
-    def __init__(
-        self,
-        backbone: nn.Module,
-        *,
-        hidden: int = 1024,
-        depth: int = 2,
-        drop: float = 0.1,
-        feat_dim: int | None = None,
-        norm_layer: type[nn.Module] | None = None,
-        num_neck: int = 0,
-        neck_num_heads: int = 12,
-        backbone_dtype: torch.dtype | None = None,
-        pred_space: str = "log",
-        head_style: str = "single",
-    ):
-        head_style = str(head_style).strip().lower()
-        if head_style not in ("single", "multi"):
-            raise ValueError(f"head_style must be 'single' or 'multi' (got {head_style})")
-        norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
-        super().__init__(
-            backbone,
-            hidden=int(hidden),
-            depth=int(depth),
-            drop=float(drop),
-            out_dim=3,
-            feat_dim=feat_dim,
-            norm_layer=norm_layer,
-            num_neck=int(num_neck),
-            neck_num_heads=int(neck_num_heads),
-            backbone_dtype=backbone_dtype,
-            pred_space=pred_space,
-        )
-        self.head_style = head_style
-        if head_style == "multi":
-            self.head_green = _build_head(
-                in_dim=self.feat_dim,
-                hidden=int(hidden),
-                depth=int(depth),
-                drop=float(drop),
-                out_dim=1,
-                norm_layer=norm_layer,
-            )
-            self.head_clover = _build_head(
-                in_dim=self.feat_dim,
-                hidden=int(hidden),
-                depth=int(depth),
-                drop=float(drop),
-                out_dim=1,
-                norm_layer=norm_layer,
-            )
-            self.head_dead = _build_head(
-                in_dim=self.feat_dim,
-                hidden=int(hidden),
-                depth=int(depth),
-                drop=float(drop),
-                out_dim=1,
-                norm_layer=norm_layer,
-            )
-            self.head = nn.ModuleList([self.head_green, self.head_clover, self.head_dead])
-
-    def _split_components(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.head_style == "multi":
-            green = self.head_green(feats)
-            clover = self.head_clover(feats)
-            dead = self.head_dead(feats)
-        else:
-            out = self.head(feats)
-            green = out[:, [0]]
-            clover = out[:, [1]]
-            dead = out[:, [2]]
-        return green, clover, dead
-
-    def _compose_outputs(self, green: torch.Tensor, clover: torch.Tensor, dead: torch.Tensor) -> torch.Tensor:
-        if self.pred_space == "log":
-            green_lin = torch.expm1(green)
-            clover_lin = torch.expm1(clover)
-            dead_lin = torch.expm1(dead)
-            gdm_lin = green_lin + clover_lin
-            total_lin = gdm_lin + dead_lin
-            gdm = torch.log1p(gdm_lin)
-            total = torch.log1p(total_lin)
-            return torch.cat([green, clover, dead, gdm, total], dim=1)
-        gdm = green + clover
-        total = gdm + dead
-        return torch.cat([green, clover, dead, gdm, total], dim=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.set_grad_enabled(self.backbone_grad):
-            with autocast_context(x.device, dtype=self.backbone_dtype):
-                tokens, rope = self._backbone_tokens(x)
-
-        for block in self.neck:
-            try:
-                tokens = block(tokens, rope)
-            except TypeError:
-                tokens = block(tokens)
-
-        cls = tokens[:, 0, :]
-        cls = self.norm(cls)
-        green, clover, dead = self._split_components(cls)
-        return self._compose_outputs(green, clover, dead)
-
-    def set_train(self, train: bool = True) -> None:
-        self.neck.train(train)
-        self.norm.train(train)
-        if self.head_style == "multi":
-            self.head_green.train(train)
-            self.head_clover.train(train)
-            self.head_dead.train(train)
-        else:
-            self.head.train(train)
-
-    @torch.no_grad()
-    def init(self) -> None:
-        modules = [*self.neck.modules(), *self.norm.modules()]
-        if self.head_style == "multi":
-            modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
-        else:
-            modules += [*self.head.modules()]
-        for m in modules:
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, mean=0.0, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
-                if getattr(m, "elementwise_affine", False):
-                    nn.init.ones_(m.weight)
-                    nn.init.zeros_(m.bias)
-
-
-class TiledDINOv3Regressor(DINOv3Regressor):
-    def __init__(
-        self,
-        backbone: nn.Module,
-        *,
-        hidden: int = 1024,
-        depth: int = 2,
-        drop: float = 0.1,
-        out_dim: int = 5,
-        feat_dim: int | None = None,
-        norm_layer: type[nn.Module] | None = None,
-        num_neck: int = 0,
-        neck_num_heads: int = 12,
-        backbone_dtype: torch.dtype | None = None,
-        pred_space: str = "log",
-    ):
-        norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
-        super().__init__(
-            backbone,
-            hidden=int(hidden),
-            depth=int(depth),
-            drop=float(drop),
-            out_dim=int(out_dim),
-            feat_dim=feat_dim,
-            norm_layer=norm_layer,
-            num_neck=int(num_neck),
-            neck_num_heads=int(neck_num_heads),
-            backbone_dtype=backbone_dtype,
-            pred_space=pred_space,
-        )
         self.fused_dim = int(self.feat_dim) * 2
         self.head = _build_head(
             in_dim=self.fused_dim,
@@ -331,11 +139,12 @@ class TiledDINOv3Regressor(DINOv3Regressor):
             out_dim=int(out_dim),
             norm_layer=norm_layer,
         )
+        self.norm = norm_layer(self.feat_dim)
 
     def _tile_cls(self, x: torch.Tensor) -> torch.Tensor:
         with torch.set_grad_enabled(self.backbone_grad):
             with autocast_context(x.device, dtype=self.backbone_dtype):
-                tokens, rope = self._backbone_tokens(x)
+                tokens, rope = _backbone_tokens(self.backbone, x)
 
         for block in self.neck:
             try:
@@ -355,6 +164,19 @@ class TiledDINOv3Regressor(DINOv3Regressor):
         cls_right = self._tile_cls(x_right)
         fused = torch.cat([cls_left, cls_right], dim=1)
         return self.head(fused)
+
+    def set_train(self, train: bool = True) -> None:
+        self.neck.train(train)
+        self.head.train(train)
+        self.norm.train(train)
+
+    def set_backbone_grad(self, train: bool = True) -> None:
+        self.backbone_grad = bool(train)
+
+    @torch.no_grad()
+    def init(self) -> None:
+        modules = [*self.head.modules(), *self.neck.modules(), *self.norm.modules()]
+        _init_modules(modules)
 
 
 class TiledDINOv3Regressor3(TiledDINOv3Regressor):
@@ -472,15 +294,7 @@ class TiledDINOv3Regressor3(TiledDINOv3Regressor):
             modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
         else:
             modules += [*self.head.modules()]
-        for m in modules:
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, mean=0.0, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
-                if getattr(m, "elementwise_affine", False):
-                    nn.init.ones_(m.weight)
-                    nn.init.zeros_(m.bias)
+        _init_modules(modules)
 
 
 def _optional_import_self_attention_block():

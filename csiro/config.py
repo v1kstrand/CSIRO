@@ -48,7 +48,7 @@ DEFAULTS: dict[str, Any] = dict(
     cv_params=dict(mode="gkf", cv_seed=0, n_splits=5, max_folds=None),
     cv_resume=True,
     max_folds=None,
-    device="cuda",
+    device="cuda",  # [cuda, cpu]
     verbose=False,
     epochs=80,
     batch_size=124,
@@ -56,10 +56,10 @@ DEFAULTS: dict[str, Any] = dict(
     lr_start=3e-4,
     lr_final=1e-7,
     early_stopping=10,
-    backbone_size="b",
-    model_name="tiled_base",
-    head_style="single",
-    pred_space="log",
+    backbone_size="b",  # [b, l]
+    model_name="tiled_base",  # [tiled_base, tiled_sum3]
+    head_style="single",  # [single, multi]
+    pred_space="log",  # [log, gram]
     loss_weights=(1.0, 1.0, 1.0, 0.0, 0.0),
     huber_beta=5.0,
     head_hidden=2048,
@@ -86,8 +86,8 @@ DEFAULTS: dict[str, Any] = dict(
     hue_range=(0.02, 0.08),
     tiled_inp=True,
     tile_swap=False,
-    backbone_dtype="fp16",
-    trainable_dtype="fp16",
+    backbone_dtype="fp16",  # [fp16, bf16, fp32]
+    trainable_dtype="fp16",  # [fp16, bf16, fp32]
     save_output_dir="/notebooks/kaggle/csiro/output"
 )
 

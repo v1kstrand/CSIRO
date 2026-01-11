@@ -26,7 +26,7 @@ from .ensemble_utils import (
 )
 from .losses import WeightedMSELoss, WeightedSmoothL1Loss
 from .metrics import eval_global_wr2
-from .model import DINOv3Regressor, DINOv3Regressor3, TiledDINOv3Regressor, TiledDINOv3Regressor3
+from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3
 from .transforms import base_train_comp, post_tfms
 from .utils import build_color_jitter_sweep, filter_kwargs
 
@@ -53,20 +53,12 @@ def _pred_to_grams(pred: torch.Tensor, pred_space: str, *, clamp: bool = True) -
 
 def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
     name = str(model_name or "").strip().lower()
-    if not name:
-        return TiledDINOv3Regressor if tiled_inp else DINOv3Regressor
-    if name in ("tiled_base", "tiled"):
-        if not tiled_inp:
-            raise ValueError("model_name='tiled_base' requires tiled_inp=True.")
+    if not tiled_inp:
+        raise ValueError("Non-tiled models are no longer supported. Set tiled_inp=True.")
+    if not name or name in ("tiled_base", "tiled"):
         return TiledDINOv3Regressor
     if name in ("tiled_sum3", "tiled_mass3", "tiled_3sum", "tiled_3"):
-        if not tiled_inp:
-            raise ValueError("model_name='tiled_sum3' requires tiled_inp=True.")
         return TiledDINOv3Regressor3
-    if name in ("base", "default"):
-        return DINOv3Regressor if not tiled_inp else TiledDINOv3Regressor
-    if name in ("sum3", "mass3", "3sum"):
-        return DINOv3Regressor3 if not tiled_inp else TiledDINOv3Regressor3
     raise ValueError(f"Unknown model_name: {model_name}")
 
 
@@ -122,7 +114,7 @@ def _build_model_from_state(
     neck_num_heads = int(state.get("neck_num_heads", neck_num_heads_for(backbone_size)))
     pred_space = _normalize_pred_space(state.get("pred_space", DEFAULTS.get("pred_space", "log")))
     head_style = str(state.get("head_style", DEFAULTS.get("head_style", "single"))).strip().lower()
-    if pred_space == "gram" and model_cls in (DINOv3Regressor, TiledDINOv3Regressor):
+    if pred_space == "gram" and model_cls is TiledDINOv3Regressor:
         raise ValueError("pred_space='gram' is only supported for the 3-output model variants.")
     model_kwargs = dict(
         backbone=backbone,
@@ -134,7 +126,7 @@ def _build_model_from_state(
         backbone_dtype=backbone_dtype,
         pred_space=pred_space,
     )
-    if model_cls in (DINOv3Regressor3, TiledDINOv3Regressor3):
+    if model_cls is TiledDINOv3Regressor3:
         model_kwargs["head_style"] = head_style
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
@@ -246,7 +238,7 @@ def train_one_fold(
     if pred_space is None:
         pred_space = DEFAULTS.get("pred_space", "log")
     pred_space = _normalize_pred_space(pred_space)
-    if pred_space == "gram" and model_cls in (DINOv3Regressor, TiledDINOv3Regressor):
+    if pred_space == "gram" and model_cls is TiledDINOv3Regressor:
         raise ValueError("pred_space='gram' is only supported for the 3-output model variants.")
     if head_style is None:
         head_style = DEFAULTS.get("head_style", "single")
@@ -261,7 +253,7 @@ def train_one_fold(
         backbone_dtype=backbone_dtype,
         pred_space=pred_space,
     )
-    if model_cls in (DINOv3Regressor3, TiledDINOv3Regressor3):
+    if model_cls is TiledDINOv3Regressor3:
         model_kwargs["head_style"] = head_style
     model = model_cls(**model_kwargs).to(device)
     model.init()
