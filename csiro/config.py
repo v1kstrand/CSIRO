@@ -62,6 +62,7 @@ DEFAULTS: dict[str, Any] = dict(
     pred_space="log",  # [log, gram]
     loss_weights=(1.0, 1.0, 1.0, 0.0, 0.0),
     huber_beta=5.0,
+    tau_neg=0.0,
     head_hidden=2048,
     head_drop=0.1,
     head_depth=4,

@@ -10,7 +10,7 @@ from sklearn.model_selection import GroupKFold
 from tqdm.auto import tqdm
 
 from .amp import autocast_context
-from .config import DEFAULTS, DEFAULT_LOSS_WEIGHTS, default_num_workers, parse_dtype, neck_num_heads_for
+from .config import DEFAULTS, DEFAULT_LOSS_WEIGHTS, TARGETS, default_num_workers, parse_dtype, neck_num_heads_for
 from .ensemble_utils import (
     _agg_stack,
     _agg_tta,
@@ -35,6 +35,32 @@ def _pred_to_grams(pred: torch.Tensor, pred_space: str, *, clamp: bool = True) -
     else:
         out = torch.expm1(pred.float())
     return out.clamp_min(0.0) if clamp else out
+
+try:
+    _IDX_GREEN = TARGETS.index("Dry_Green_g")
+    _IDX_CLOVER = TARGETS.index("Dry_Clover_g")
+    _IDX_DEAD = TARGETS.index("Dry_Dead_g")
+    _IDX_GDM = TARGETS.index("GDM_g")
+    _IDX_TOTAL = TARGETS.index("Dry_Total_g")
+except ValueError as exc:
+    raise ValueError("TARGETS must include Dry_Green_g, Dry_Clover_g, Dry_Dead_g, GDM_g, Dry_Total_g.") from exc
+
+
+def _postprocess_mass_balance(pred: torch.Tensor) -> torch.Tensor:
+    if pred.size(-1) < 5:
+        return pred
+    out = pred.clone()
+    green = out[..., _IDX_GREEN].clamp_min(0.0)
+    clover = out[..., _IDX_CLOVER].clamp_min(0.0)
+    dead = out[..., _IDX_DEAD].clamp_min(0.0)
+    gdm = green + clover
+    total = gdm + dead
+    out[..., _IDX_GREEN] = green
+    out[..., _IDX_CLOVER] = clover
+    out[..., _IDX_DEAD] = dead
+    out[..., _IDX_GDM] = gdm
+    out[..., _IDX_TOTAL] = total
+    return out
 
 def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
     name = str(model_name or "").strip().lower()
@@ -348,6 +374,7 @@ def predict_ensemble(
                             p.copy_(s)
 
             p_ens = _agg_stack(preds_models, inner_agg)
+            p_ens = _postprocess_mass_balance(p_ens)
             preds.append(p_ens.detach().cpu())
 
         return torch.cat(preds, dim=0)
@@ -355,13 +382,15 @@ def predict_ensemble(
     if outer_agg == "flatten":
         flat_states = [s for run in runs for s in run]
         models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
-        return _predict_with_models(models)
+        preds = _predict_with_models(models)
+        return _postprocess_mass_balance(preds)
     if outer_agg in ("mean", "median"):
         preds_runs: list[torch.Tensor] = []
         for run in runs:
             models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in run]
             preds_runs.append(_predict_with_models(models))
-        return _agg_stack(preds_runs, outer_agg)
+        preds = _agg_stack(preds_runs, outer_agg)
+        return _postprocess_mass_balance(preds)
     raise ValueError(f"Unknown outer_agg: {outer_agg}")
 
 
@@ -489,6 +518,7 @@ def predict_ensemble_tiled(
                             p.copy_(s)
 
             p_ens = _agg_stack(preds_models, inner_agg)
+            p_ens = _postprocess_mass_balance(p_ens)
             preds.append(p_ens.detach().cpu())
 
         return torch.cat(preds, dim=0)
@@ -496,13 +526,15 @@ def predict_ensemble_tiled(
     if outer_agg == "flatten":
         flat_states = [s for run in runs for s in run]
         models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
-        return _predict_with_models(models)
+        preds = _predict_with_models(models)
+        return _postprocess_mass_balance(preds)
     if outer_agg in ("mean", "median"):
         preds_runs: list[torch.Tensor] = []
         for run in runs:
             models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in run]
             preds_runs.append(_predict_with_models(models))
-        return _agg_stack(preds_runs, outer_agg)
+        preds = _agg_stack(preds_runs, outer_agg)
+        return _postprocess_mass_balance(preds)
     raise ValueError(f"Unknown outer_agg: {outer_agg}")
 
 

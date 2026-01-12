@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
-from .config import default_num_workers, DEFAULT_LOSS_WEIGHTS, DEFAULTS, parse_dtype, neck_num_heads_for
+from .config import TARGETS, default_num_workers, DEFAULT_LOSS_WEIGHTS, DEFAULTS, parse_dtype, neck_num_heads_for
 from .data import TransformView, TiledTransformView
 from .ensemble_utils import (
     _agg_stack,
@@ -24,7 +24,7 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
-from .losses import WeightedMSELoss, WeightedSmoothL1Loss
+from .losses import NegativityPenaltyLoss, WeightedMSELoss, WeightedSmoothL1Loss
 from .metrics import eval_global_wr2
 from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3
 from .transforms import base_train_comp, post_tfms
@@ -50,6 +50,32 @@ def _pred_to_grams(pred: torch.Tensor, pred_space: str, *, clamp: bool = True) -
     else:
         out = torch.expm1(pred.float())
     return out.clamp_min(0.0) if clamp else out
+
+try:
+    _IDX_GREEN = TARGETS.index("Dry_Green_g")
+    _IDX_CLOVER = TARGETS.index("Dry_Clover_g")
+    _IDX_DEAD = TARGETS.index("Dry_Dead_g")
+    _IDX_GDM = TARGETS.index("GDM_g")
+    _IDX_TOTAL = TARGETS.index("Dry_Total_g")
+except ValueError as exc:
+    raise ValueError("TARGETS must include Dry_Green_g, Dry_Clover_g, Dry_Dead_g, GDM_g, Dry_Total_g.") from exc
+
+
+def _postprocess_mass_balance(pred: torch.Tensor) -> torch.Tensor:
+    if pred.size(-1) < 5:
+        return pred
+    out = pred.clone()
+    green = out[..., _IDX_GREEN].clamp_min(0.0)
+    clover = out[..., _IDX_CLOVER].clamp_min(0.0)
+    dead = out[..., _IDX_DEAD].clamp_min(0.0)
+    gdm = green + clover
+    total = gdm + dead
+    out[..., _IDX_GREEN] = green
+    out[..., _IDX_CLOVER] = clover
+    out[..., _IDX_DEAD] = dead
+    out[..., _IDX_GDM] = gdm
+    out[..., _IDX_TOTAL] = total
+    return out
 
 def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
     name = str(model_name or "").strip().lower()
@@ -191,6 +217,7 @@ def train_one_fold(
     pred_space: str | None = None,
     loss_weights: list[float] | tuple[float, ...] | None = None,
     huber_beta: float | None = None,
+    tau_neg: float | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -269,6 +296,11 @@ def train_one_fold(
         criterion = WeightedSmoothL1Loss(weights=w_loss, beta=float(huber_beta)).to(device)
     else:
         criterion = WeightedMSELoss(weights=w_loss).to(device)
+    if tau_neg is None:
+        tau_neg = float(DEFAULTS.get("tau_neg", 0.0))
+    neg_criterion = None
+    if float(tau_neg) > 0.0:
+        neg_criterion = NegativityPenaltyLoss(tau_neg=float(tau_neg), pred_space=pred_space).to(device)
     
     trainable_params = _trainable_params_list(model)
     
@@ -320,6 +352,8 @@ def train_one_fold(
                 pred = model(x)
                 loss_main = criterion(pred, y_target)
                 loss = loss_main
+                if neg_criterion is not None:
+                    loss = loss + neg_criterion(pred)
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -564,6 +598,7 @@ def eval_global_wr2_ensemble(
                     raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
 
         p_ens = _agg_stack(preds_models, inner_agg)
+        p_ens = _postprocess_mass_balance(p_ens)
 
         y = torch.expm1(y_log.float())
         diff = y - p_ens
