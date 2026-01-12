@@ -259,6 +259,8 @@ class TiledDINOv3Regressor3(TiledDINOv3Regressor):
             dead_lin = torch.expm1(dead)
             gdm_lin = green_lin + clover_lin
             total_lin = gdm_lin + dead_lin
+            gdm_lin = gdm_lin.clamp_min(-0.999999)
+            total_lin = total_lin.clamp_min(-0.999999)
             gdm = torch.log1p(gdm_lin)
             total = torch.log1p(total_lin)
             return torch.cat([green, clover, dead, gdm, total], dim=1)
