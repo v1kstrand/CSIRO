@@ -315,10 +315,10 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         pred_space: str = "log",
         head_style: str = "single",
         out_format: str = "cat_cls",
-        num_regs = 5,
     ):
         super().__init__()
-        print("INFO: n_storage_tokens —", backbone.n_storage_tokens)
+        
+        num_regs = backbone.n_storage_tokens + 1 
         head_style = str(head_style).strip().lower()
         if head_style not in ("single", "multi"):
             raise ValueError(f"head_style must be 'single' or 'multi' (got {head_style})")
