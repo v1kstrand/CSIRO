@@ -178,6 +178,44 @@ class BiomassTiledCached(Dataset):
         return left, right, y
 
 
+class BiomassFullCached(Dataset):
+    def __init__(
+        self,
+        wide_df: pd.DataFrame,
+        *,
+        targets: Sequence[str] = TARGETS,
+        cache_images: bool = True,
+        img_preprocess: bool = False,
+    ):
+        self.df = wide_df.reset_index(drop=True)
+        y = self.df[list(targets)].values.astype(np.float32)
+        self.y_log = np.log1p(y)
+        self.targets = list(targets)
+        self.img_preprocess = bool(img_preprocess)
+        self.cache_images = cache_images
+        self.imgs: list[Image.Image] | None = [] if cache_images else None
+        if cache_images:
+            for p in self.df["abs_path"].tolist():
+                im = Image.open(p).convert("RGB")
+                im = _maybe_preprocess_image(im, self.img_preprocess)
+                self.imgs.append(im.copy())
+                im.close()
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, i: int):
+        if self.imgs is None:
+            with Image.open(self.df.loc[i, "abs_path"]) as im0:
+                im = im0.convert("RGB")
+                im = _maybe_preprocess_image(im, self.img_preprocess)
+                im = im.copy()
+        else:
+            im = self.imgs[i]
+        y = torch.from_numpy(self.y_log[i])
+        return im, y
+
+
 class TransformView(Dataset):
     def __init__(self, base: Dataset, tfms):
         self.base = base
@@ -193,21 +231,61 @@ class TransformView(Dataset):
 
 
 class TiledTransformView(Dataset):
-    def __init__(self, base: Dataset, tfms, *, tile_swap: bool = False):
+    def __init__(self, base: Dataset, tfms):
         self.base = base
         self.tfms = tfms
-        self.tile_swap = bool(tile_swap)
 
     def __len__(self) -> int:
         return len(self.base)
 
     def __getitem__(self, i: int):
         left, right, y = self.base[i]
-        if self.tile_swap and torch.rand(()) < 0.5:
-            left, right = right, left
         x_left = self.tfms(left)
         x_right = self.tfms(right)
         x = torch.stack([x_left, x_right], dim=0)
+        return x, y
+
+
+class TiledSharedTransformView(Dataset):
+    def __init__(self, base: Dataset, geom_tfms, *, img_size: int = 512, post=None):
+        self.base = base
+        self.geom_tfms = geom_tfms
+        self.resize = T.Resize((int(img_size), int(img_size)), antialias=True)
+        self.post = post if post is not None else post_tfms()
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i: int):
+        item = self.base[i]
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            img, y = item[0], item[1]
+        else:
+            img, y = item, None
+
+        if not isinstance(img, Image.Image):
+            raise ValueError("TiledSharedTransformView expects PIL images from base dataset.")
+
+        if self.geom_tfms is not None:
+            if isinstance(self.geom_tfms, str) and self.geom_tfms == "safe":
+                k = int(torch.randint(0, 4, (1,)).item())
+                if k == 1:
+                    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+                elif k == 2:
+                    img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                elif k == 3:
+                    img = img.transpose(Image.ROTATE_180)
+            else:
+                img = self.geom_tfms(img)
+
+        left = img.crop((0, 0, 1000, 1000))
+        right = img.crop((1000, 0, 2000, 1000))
+
+        left = self.post(self.resize(left))
+        right = self.post(self.resize(right))
+        x = torch.stack([left, right], dim=0)
+        if y is None:
+            return x
         return x, y
 
 
@@ -286,6 +364,88 @@ class TiledTTADataset(Dataset):
                 l = jitter_fn(l)
                 r = jitter_fn(r)
             outs.append(torch.stack([self.post(l), self.post(r)], dim=0))
+
+        x_tta = torch.stack(outs, dim=0)
+        if y is None:
+            return x_tta
+        return x_tta, y
+
+
+class TiledSharedTTADataset(Dataset):
+    def __init__(
+        self,
+        base: Dataset,
+        *,
+        tta_n: int = 4,
+        bcs_val: float = 0.0,
+        hue_val: float = 0.0,
+        img_size: int = 512,
+        apply_post_tfms: bool = True,
+    ):
+        self.base = base
+        self.tta_n = int(tta_n)
+        if self.tta_n <= 0:
+            raise ValueError("tta_n must be >= 1.")
+        self.apply_post_tfms = bool(apply_post_tfms)
+        self.post = post_tfms() if self.apply_post_tfms else None
+        if self.post is None:
+            raise ValueError("TiledSharedTTADataset requires apply_post_tfms=True.")
+        self.resize = T.Resize((int(img_size), int(img_size)), antialias=True)
+        self.bcs_val = float(bcs_val)
+        self.hue_val = float(hue_val)
+        self._jitter = (
+            T.ColorJitter(
+                brightness=self.bcs_val,
+                contrast=self.bcs_val,
+                saturation=self.bcs_val,
+                hue=self.hue_val,
+            )
+            if (self.bcs_val != 0.0 or self.hue_val != 0.0)
+            else None
+        )
+        self._ops = list(range(4))
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    @staticmethod
+    def _apply_op(img: Image.Image, k: int) -> Image.Image:
+        if k == 1:
+            return img.transpose(Image.FLIP_TOP_BOTTOM)
+        if k == 2:
+            return img.transpose(Image.FLIP_LEFT_RIGHT)
+        if k == 3:
+            return img.transpose(Image.ROTATE_180)
+        return img
+
+    def __getitem__(self, i: int):
+        item = self.base[i]
+        if isinstance(item, (tuple, list)):
+            img, y = item[0], item[1]
+        else:
+            img, y = item, None
+
+        if not isinstance(img, Image.Image):
+            raise ValueError("TiledSharedTTADataset expects PIL images from base dataset.")
+
+        outs: list[torch.Tensor] = []
+        for idx in range(int(self.tta_n)):
+            k = self._ops[idx % 4]
+            full = self._apply_op(img, k)
+            left = full.crop((0, 0, 1000, 1000))
+            right = full.crop((1000, 0, 2000, 1000))
+            if self._jitter is not None:
+                jitter_fn = T.ColorJitter.get_params(
+                    self._jitter.brightness,
+                    self._jitter.contrast,
+                    self._jitter.saturation,
+                    self._jitter.hue,
+                )
+                left = jitter_fn(left)
+                right = jitter_fn(right)
+            left = self.post(self.resize(left))
+            right = self.post(self.resize(right))
+            outs.append(torch.stack([left, right], dim=0))
 
         x_tta = torch.stack(outs, dim=0)
         if y is None:

@@ -16,7 +16,7 @@ from tqdm.auto import tqdm
 
 from .amp import autocast_context, grad_scaler
 from .config import TARGETS, default_num_workers, DEFAULT_LOSS_WEIGHTS, DEFAULTS, parse_dtype, neck_num_heads_for
-from .data import TransformView, TiledTransformView
+from .data import TransformView, TiledSharedTransformView, TiledTransformView
 from .ensemble_utils import (
     _agg_stack,
     _agg_tta,
@@ -26,7 +26,7 @@ from .ensemble_utils import (
 )
 from .losses import NegativityPenaltyLoss, WeightedMSELoss, WeightedSmoothL1Loss
 from .metrics import eval_global_wr2
-from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3
+from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3
 from .transforms import base_train_comp, post_tfms
 from .utils import build_color_jitter_sweep, filter_kwargs
 
@@ -85,6 +85,8 @@ def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.
         return TiledDINOv3Regressor
     if name in ("tiled_sum3", "tiled_mass3", "tiled_3sum", "tiled_3"):
         return TiledDINOv3Regressor3
+    if name in ("tiled_stitch", "tiled_stitch3", "tiled_stitched"):
+        return TiledDINOv3RegressorStitched3
     raise ValueError(f"Unknown model_name: {model_name}")
 
 
@@ -152,8 +154,11 @@ def _build_model_from_state(
         backbone_dtype=backbone_dtype,
         pred_space=pred_space,
     )
-    if model_cls is TiledDINOv3Regressor3:
+    if model_cls in (TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3):
         model_kwargs["head_style"] = head_style
+        if model_cls is TiledDINOv3RegressorStitched3:
+            out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
+            model_kwargs["out_format"] = out_format
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -218,6 +223,7 @@ def train_one_fold(
     loss_weights: list[float] | tuple[float, ...] | None = None,
     huber_beta: float | None = None,
     tau_neg: float | None = None,
+    out_format: str | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -282,6 +288,10 @@ def train_one_fold(
     )
     if model_cls is TiledDINOv3Regressor3:
         model_kwargs["head_style"] = head_style
+    if model_cls is TiledDINOv3RegressorStitched3:
+        if out_format is None:
+            out_format = DEFAULTS.get("out_format", "cat_cls")
+        model_kwargs["out_format"] = str(out_format).strip().lower()
     model = model_cls(**model_kwargs).to(device)
     model.init()
     model.model_name = model_name or ("tiled_base" if tiled_inp else "base")
@@ -672,8 +682,8 @@ def run_groupkfold_cv(
     train_kwargs.pop("rdrop", None)
     val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
-    tile_swap = bool(train_kwargs.pop("tile_swap", DEFAULTS.get("tile_swap", False)))
     model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
+    out_format = str(train_kwargs.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
     pred_space = _normalize_pred_space(train_kwargs.get("pred_space", DEFAULTS.get("pred_space", "log")))
     head_style = str(train_kwargs.get("head_style", DEFAULTS.get("head_style", "single"))).strip().lower()
     jitter_tfms = build_color_jitter_sweep(
@@ -688,8 +698,18 @@ def run_groupkfold_cv(
     if to_gray_p > 0.0:
         train_post_ops.append(T.RandomGrayscale(p=float(to_gray_p)))
     train_post = T.Compose(train_post_ops)
+    use_shared_geom = tiled_inp and str(model_name).strip().lower() in ("tiled_stitch", "tiled_stitch3", "tiled_stitched")
+    img_size_use = int(img_size or DEFAULTS.get("img_size", 512))
     if tiled_inp:
-        ds_va_view = TiledTransformView(dataset, post_tfms(), tile_swap=False)
+        if use_shared_geom:
+            ds_va_view = TiledSharedTransformView(
+                dataset,
+                geom_tfms=None,
+                img_size=img_size_use,
+                post=post_tfms(),
+            )
+        else:
+            ds_va_view = TiledTransformView(dataset, post_tfms())
     else:
         ds_va_view = TransformView(dataset, post_tfms())
 
@@ -774,11 +794,18 @@ def run_groupkfold_cv(
             for model_idx in range(int(n_models)):
                 train_tfms = train_tfms_list[int(model_idx)]
                 if tiled_inp:
-                    ds_tr_view = TiledTransformView(
-                        dataset,
-                        T.Compose([train_tfms, train_post]),
-                        tile_swap=bool(tile_swap),
-                    )
+                    if use_shared_geom:
+                        ds_tr_view = TiledSharedTransformView(
+                            dataset,
+                            geom_tfms="safe",
+                            img_size=img_size_use,
+                            post=train_post,
+                        )
+                    else:
+                        ds_tr_view = TiledTransformView(
+                            dataset,
+                            T.Compose([train_tfms, train_post]),
+                        )
                 else:
                     ds_tr_view = TransformView(dataset, T.Compose([train_tfms, train_post]))
                 result = train_one_fold(
@@ -803,6 +830,7 @@ def run_groupkfold_cv(
                         model_idx=int(model_idx),
                         tiled_inp=bool(tiled_inp),
                         model_name=str(model_name or ("tiled_base" if tiled_inp else "base")),
+                        out_format=str(out_format),
                         pred_space=str(pred_space),
                         head_style=str(head_style),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),

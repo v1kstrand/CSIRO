@@ -280,7 +280,7 @@ def _ensure_tensor_dataset(dataset, *, tiled_inp: bool):
 
     if tiled_inp:
         if isinstance(sample, (tuple, list)) and len(sample) >= 3:
-            return TiledTransformView(dataset, post_tfms(), tile_swap=False)
+            return TiledTransformView(dataset, post_tfms())
         raise ValueError("tiled_inp expects dataset to return (left, right, y) or tensors.")
 
     if isinstance(sample, (tuple, list)) and len(sample) >= 2:

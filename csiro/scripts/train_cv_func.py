@@ -18,7 +18,7 @@ from csiro.config import (
     dino_weights_path_from_size,
     neck_num_heads_for,
 )
-from csiro.data import BiomassBaseCached, BiomassTiledCached, load_train_wide
+from csiro.data import BiomassBaseCached, BiomassFullCached, BiomassTiledCached, load_train_wide
 from csiro.train import run_groupkfold_cv
 
 def train_cv(
@@ -45,7 +45,7 @@ def train_cv(
 
     sys.path.insert(0, str(dino_repo))
     wide_df = load_train_wide(str(csv), root=str(root))
-    dataset_cache: dict[bool, Any] = {}
+    dataset_cache: dict[str, Any] = {}
     backbone_cache: dict[tuple[str, str, str], Any] = {}
 
     base_kwargs = dict(cfg)
@@ -94,21 +94,29 @@ def train_cv(
 
         kwargs["backbone"] = backbone_cache[cache_key]
         tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
+        model_name = str(kwargs.get("model_name", cfg.get("model_name", ""))).strip().lower()
+        use_shared_geom = tiled_inp and model_name in ("tiled_stitch", "tiled_stitch3", "tiled_stitched")
         img_preprocess = bool(kwargs.get("img_preprocess", cfg.get("img_preprocess", False)))
-        if tiled_inp not in dataset_cache:
-            if tiled_inp:
-                dataset_cache[tiled_inp] = BiomassTiledCached(
+        cache_key = "shared" if use_shared_geom else ("tiled" if tiled_inp else "base")
+        if cache_key not in dataset_cache:
+            if use_shared_geom:
+                dataset_cache[cache_key] = BiomassFullCached(
+                    wide_df,
+                    img_preprocess=img_preprocess,
+                )
+            elif tiled_inp:
+                dataset_cache[cache_key] = BiomassTiledCached(
                     wide_df,
                     img_size=int(cfg["img_size"]),
                     img_preprocess=img_preprocess,
                 )
             else:
-                dataset_cache[tiled_inp] = BiomassBaseCached(
+                dataset_cache[cache_key] = BiomassBaseCached(
                     wide_df,
                     img_size=int(cfg["img_size"]),
                     img_preprocess=img_preprocess,
                 )
-        kwargs["dataset"] = dataset_cache[tiled_inp]
+        kwargs["dataset"] = dataset_cache[cache_key]
         result = run_groupkfold_cv(return_details=True, **kwargs)
         outputs.append(
             dict(

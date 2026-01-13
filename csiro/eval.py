@@ -18,7 +18,7 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
-from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3
+from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3
 from .transforms import post_tfms
 
 def _normalize_pred_space(pred_space: str) -> str:
@@ -70,6 +70,8 @@ def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.
         return TiledDINOv3Regressor
     if name in ("tiled_sum3", "tiled_mass3", "tiled_3sum", "tiled_3"):
         return TiledDINOv3Regressor3
+    if name in ("tiled_stitch", "tiled_stitch3", "tiled_stitched"):
+        return TiledDINOv3RegressorStitched3
     raise ValueError(f"Unknown model_name: {model_name}")
 
 
@@ -217,8 +219,11 @@ def _build_model_from_state(
         backbone_dtype=backbone_dtype,
         pred_space=pred_space,
     )
-    if model_cls is TiledDINOv3Regressor3:
+    if model_cls in (TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3):
         model_kwargs["head_style"] = head_style
+        if model_cls is TiledDINOv3RegressorStitched3:
+            out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
+            model_kwargs["out_format"] = out_format
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     model.pred_space = pred_space
