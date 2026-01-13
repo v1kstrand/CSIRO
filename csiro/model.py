@@ -315,6 +315,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         pred_space: str = "log",
         head_style: str = "single",
         out_format: str = "cat_cls",
+        num_regs = 4,
     ):
         super().__init__()
         head_style = str(head_style).strip().lower()
@@ -330,6 +331,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad_(False)
         self.backbone.eval()
+        self.num_regs = num_regs
 
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
@@ -424,8 +426,14 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 tok1, rope = _backbone_tokens(self.backbone, x_left)
                 tok2, _ = _backbone_tokens(self.backbone, x_right)
 
-        cls1, patch1 = tok1[:, :1, :], tok1[:, 1:, :]
-        cls2, patch2 = tok2[:, :1, :], tok2[:, 1:, :]
+        if tok1.size(1) <= int(self.num_regs):
+            raise ValueError(f"Unexpected token length {tok1.size(1)} for num_regs={self.num_regs}.")
+        if tok2.size(1) <= int(self.num_regs):
+            raise ValueError(f"Unexpected token length {tok2.size(1)} for num_regs={self.num_regs}.")
+        prefix1, patch1 = tok1[:, : int(self.num_regs), :], tok1[:, int(self.num_regs) :, :]
+        prefix2, patch2 = tok2[:, : int(self.num_regs), :], tok2[:, int(self.num_regs) :, :]
+        cls1, regs1 = prefix1[:, :1, :], prefix1[:, 1:, :]
+        cls2, regs2 = prefix2[:, :1, :], prefix2[:, 1:, :]
         bsz, n_tok, dim = patch1.shape
         p = int(math.sqrt(int(n_tok)))
         if p * p != int(n_tok):
@@ -440,7 +448,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         grid_full = torch.cat([grid1_half, grid2_half], dim=2)
         tok_grid = grid_full.reshape(bsz, p * p, dim)
 
-        tokens = torch.cat([cls1, cls2, tok_grid], dim=1)
+        tokens = torch.cat([cls1, cls2, regs1, regs2, tok_grid], dim=1)
         for block in self.neck:
             try:
                 tokens = block(tokens, rope)
