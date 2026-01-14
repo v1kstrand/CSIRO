@@ -159,6 +159,7 @@ def _build_model_from_state(
         if model_cls is TiledDINOv3RegressorStitched3:
             out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
             model_kwargs["out_format"] = out_format
+            model_kwargs["neck_rope"] = bool(state.get("neck_rope", DEFAULTS.get("neck_rope", True)))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -224,6 +225,7 @@ def train_one_fold(
     huber_beta: float | None = None,
     tau_neg: float | None = None,
     out_format: str | None = None,
+    neck_rope: bool | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -292,6 +294,9 @@ def train_one_fold(
         if out_format is None:
             out_format = DEFAULTS.get("out_format", "cat_cls")
         model_kwargs["out_format"] = str(out_format).strip().lower()
+        if neck_rope is None:
+            neck_rope = bool(DEFAULTS.get("neck_rope", True))
+        model_kwargs["neck_rope"] = bool(neck_rope)
     model = model_cls(**model_kwargs).to(device)
     model.init()
     model.model_name = model_name or ("tiled_base" if tiled_inp else "base")
@@ -682,6 +687,9 @@ def run_groupkfold_cv(
     train_kwargs.pop("rdrop", None)
     val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
+    tile_geom_mode = str(train_kwargs.pop("tile_geom_mode", DEFAULTS.get("tile_geom_mode", "shared"))).strip().lower()
+    if tile_geom_mode not in ("shared", "independent"):
+        raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
     model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
     out_format = str(train_kwargs.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
     pred_space = _normalize_pred_space(train_kwargs.get("pred_space", DEFAULTS.get("pred_space", "log")))
@@ -698,7 +706,7 @@ def run_groupkfold_cv(
     if to_gray_p > 0.0:
         train_post_ops.append(T.RandomGrayscale(p=float(to_gray_p)))
     train_post = T.Compose(train_post_ops)
-    use_shared_geom = tiled_inp and str(model_name).strip().lower() in ("tiled_stitch", "tiled_stitch3", "tiled_stitched")
+    use_shared_geom = tiled_inp and tile_geom_mode == "shared"
     img_size_use = int(img_size or DEFAULTS.get("img_size", 512))
     if tiled_inp:
         if use_shared_geom:
@@ -833,6 +841,7 @@ def run_groupkfold_cv(
                         out_format=str(out_format),
                         pred_space=str(pred_space),
                         head_style=str(head_style),
+                        neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
                         head_hidden=int(train_kwargs["head_hidden"]),

@@ -224,6 +224,7 @@ def _build_model_from_state(
         if model_cls is TiledDINOv3RegressorStitched3:
             out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
             model_kwargs["out_format"] = out_format
+            model_kwargs["neck_rope"] = bool(state.get("neck_rope", DEFAULTS.get("neck_rope", True)))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     model.pred_space = pred_space

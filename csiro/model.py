@@ -147,11 +147,15 @@ class TiledDINOv3Regressor(nn.Module):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tokens, rope = _backbone_tokens(self.backbone, x)
 
+        rope_use = rope if self.neck_rope else None
         for block in self.neck:
             try:
-                tokens = block(tokens, rope)
+                tokens = block(tokens, rope_use)
             except TypeError:
-                assert False, "SelfAttentionBlock requires rope"
+                if rope_use is None:
+                    tokens = block(tokens)
+                else:
+                    assert False, "SelfAttentionBlock requires rope"
                 tokens = block(tokens)
 
         cls = tokens[:, 0, :]
@@ -315,6 +319,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         pred_space: str = "log",
         head_style: str = "single",
         out_format: str = "cat_cls",
+        neck_rope: bool = True,
     ):
         super().__init__()
         
@@ -327,6 +332,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.backbone_grad = False
         self.pred_space = _normalize_pred_space(pred_space)
         self.out_format = out_format
+        self.neck_rope = bool(neck_rope)
 
         feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():

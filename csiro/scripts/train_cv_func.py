@@ -95,7 +95,10 @@ def train_cv(
         kwargs["backbone"] = backbone_cache[cache_key]
         tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
         model_name = str(kwargs.get("model_name", cfg.get("model_name", ""))).strip().lower()
-        use_shared_geom = tiled_inp and model_name in ("tiled_stitch", "tiled_stitch3", "tiled_stitched")
+        tile_geom_mode = str(kwargs.get("tile_geom_mode", cfg.get("tile_geom_mode", "shared"))).strip().lower()
+        if tile_geom_mode not in ("shared", "independent"):
+            raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
+        use_shared_geom = tiled_inp and tile_geom_mode == "shared"
         img_preprocess = bool(kwargs.get("img_preprocess", cfg.get("img_preprocess", False)))
         cache_key = "shared" if use_shared_geom else ("tiled" if tiled_inp else "base")
         if cache_key not in dataset_cache:
