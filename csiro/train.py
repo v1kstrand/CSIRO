@@ -227,6 +227,7 @@ def train_one_fold(
     out_format: str | None = None,
     neck_rope: bool | None = None,
     ema_decay: float | None = None,
+    ema_start_epoch: int | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -324,8 +325,10 @@ def train_one_fold(
     scaler = grad_scaler(device, dtype=trainable_dtype)
     if ema_decay is None:
         ema_decay = float(DEFAULTS.get("ema_decay", 0.0))
+    if ema_start_epoch is None:
+        ema_start_epoch = int(DEFAULTS.get("ema_start_epoch", 0))
     use_ema = float(ema_decay) > 0.0
-    ema_state = _save_parts(model) if use_ema else None
+    ema_state = None
 
     best_score = -1e9
     best_state = None
@@ -387,7 +390,9 @@ def train_one_fold(
                 if clip_val and clip_val > 0:
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 opt.step()
-            if use_ema and ema_state is not None:
+            if use_ema and int(ep) >= int(ema_start_epoch):
+                if ema_state is None:
+                    ema_state = _save_parts(model)
                 _ema_update(ema_state, model, float(ema_decay))
 
             bs = int(x.size(0))
@@ -399,7 +404,7 @@ def train_one_fold(
         score = None
         if do_eval:
             model.set_train(False)
-            if use_ema and ema_state is not None:
+            if use_ema and ema_state is not None and int(ep) >= int(ema_start_epoch):
                 orig_state = _save_parts(model)
                 _load_parts(model, ema_state)
                 score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
@@ -416,7 +421,7 @@ def train_one_fold(
         if score is not None and score > best_score:
             best_score = float(score)
             patience = 0
-            if use_ema and ema_state is not None:
+            if use_ema and ema_state is not None and int(ep) >= int(ema_start_epoch):
                 best_state = copy.deepcopy(ema_state)
             else:
                 best_state = _save_parts(model)
@@ -446,7 +451,7 @@ def train_one_fold(
     p_bar.close()
 
     if best_state is None:
-        if use_ema and ema_state is not None:
+        if use_ema and ema_state is not None and int(ema_start_epoch) <= int(epochs):
             best_state = ema_state
         else:
             best_state = _save_parts(model)
@@ -761,6 +766,7 @@ def run_groupkfold_cv(
                         head_style=str(head_style),
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
                         ema_decay=float(train_kwargs.get("ema_decay", DEFAULTS.get("ema_decay", 0.0))),
+                        ema_start_epoch=int(train_kwargs.get("ema_start_epoch", DEFAULTS.get("ema_start_epoch", 0))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
                         head_hidden=int(train_kwargs["head_hidden"]),

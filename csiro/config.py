@@ -79,6 +79,7 @@ DEFAULTS: dict[str, Any] = dict(
     val_bs=None,
     comet_exp_name="csiro",
     ema_decay=0.0,
+    ema_start_epoch=0,
     img_size=512,
     img_preprocess=True,
     bcs_range=(0.2, 0.4),
