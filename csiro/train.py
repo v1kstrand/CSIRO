@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import math
 import os
-import heapq
 from typing import Any, Callable
 import uuid
 
@@ -332,7 +331,7 @@ def train_one_fold(
     if top_k_weights is None:
         top_k_weights = int(DEFAULTS.get("top_k_weights", 0))
     top_k = max(0, int(top_k_weights))
-    topk_heap: list[tuple[float, dict[str, dict[str, torch.Tensor]]]] = []
+    topk_list: list[tuple[float, dict[str, dict[str, torch.Tensor]]]] = []
 
     val_freq = max(1, int(val_freq))
     p_bar = tqdm(range(1, int(epochs) + 1))
@@ -402,9 +401,10 @@ def train_one_fold(
             score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
             if top_k > 0:
                 state_k = _save_parts(model)
-                heapq.heappush(topk_heap, (float(score), state_k))
-                if len(topk_heap) > int(top_k):
-                    heapq.heappop(topk_heap)
+                topk_list.append((float(score), state_k))
+                topk_list.sort(key=lambda x: float(x[0]), reverse=True)
+                if len(topk_list) > int(top_k):
+                    topk_list.pop(-1)
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
             p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
@@ -445,8 +445,8 @@ def train_one_fold(
         best_state = _save_parts(model)
         best_score = float(best_score)
     final_state = best_state
-    if top_k > 0 and topk_heap:
-        final_state = _avg_states([s for _, s in topk_heap])
+    if top_k > 0 and topk_list:
+        final_state = _avg_states([s for _, s in topk_list])
     if save_path and final_state is not None:
         torch.save(final_state, save_path)
     if return_state:
