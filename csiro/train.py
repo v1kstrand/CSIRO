@@ -179,6 +179,8 @@ def _build_model_from_state(
             out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
             model_kwargs["out_format"] = out_format
             model_kwargs["neck_rope"] = bool(state.get("neck_rope", DEFAULTS.get("neck_rope", True)))
+            model_kwargs["neck_drop"] = float(state.get("neck_drop", DEFAULTS.get("neck_drop", 0.0)))
+            model_kwargs["drop_path"] = state.get("drop_path", DEFAULTS.get("drop_path", None))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -227,6 +229,8 @@ def train_one_fold(
     tau_neg: float | None = None,
     out_format: str | None = None,
     neck_rope: bool | None = None,
+    neck_drop: float | None = None,
+    drop_path: dict[str, float] | None = None,
     top_k_weights: int | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
@@ -299,6 +303,12 @@ def train_one_fold(
         if neck_rope is None:
             neck_rope = bool(DEFAULTS.get("neck_rope", True))
         model_kwargs["neck_rope"] = bool(neck_rope)
+        if neck_drop is None:
+            neck_drop = float(DEFAULTS.get("neck_drop", 0.0))
+        model_kwargs["neck_drop"] = float(neck_drop)
+        if drop_path is None:
+            drop_path = DEFAULTS.get("drop_path", None)
+        model_kwargs["drop_path"] = drop_path
     model = model_cls(**model_kwargs).to(device)
     model.init()
     model.model_name = model_name or ("tiled_base" if tiled_inp else "base")
@@ -759,6 +769,8 @@ def run_groupkfold_cv(
                         pred_space=str(pred_space),
                         head_style=str(head_style),
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
+                        neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                        drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
                         head_hidden=int(train_kwargs["head_hidden"]),
@@ -788,6 +800,8 @@ def run_groupkfold_cv(
                         pred_space=str(pred_space),
                         head_style=str(head_style),
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
+                        neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                        drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=best_parts,
                         head_hidden=int(train_kwargs["head_hidden"]),

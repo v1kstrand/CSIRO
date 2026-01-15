@@ -305,6 +305,9 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         head_style: str = "single",
         out_format: str = "cat_cls",
         neck_rope: bool = True,
+        neck_drop: float = 0.0,
+        drop_path: dict[str, float] | None = None,
+        
     ):
         super().__init__()
         head_style = str(head_style).strip().lower()
@@ -317,10 +320,20 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.out_format = str(out_format).strip().lower()
         self.neck_rope = bool(neck_rope)
         self.num_regs = backbone.n_storage_tokens + 1 
+        neck_drop = float(neck_drop)
+        if neck_drop < 0.0 or neck_drop > 1.0:
+            raise ValueError(f"neck_drop must be in [0,1] (got {neck_drop}).")
+        if drop_path is not None:
+            assert isinstance(drop_path, dict) and "backbone" in drop_path and "neck" in drop_path
+            assert 0.0 <= drop_path["backbone"] <= 1.0 and 0.0 <= drop_path["neck"] <= 1.0
+        drop_path = drop_path or {"backbone" : 0.0, "neck" : 0.0}
 
         feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():
             p.requires_grad_(False)
+        if drop_path is not None and drop_path["backbone"] > 0.0:
+            for i in range(len(self.backbone.blocks)):
+                self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
 
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
@@ -336,10 +349,22 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         if int(num_neck) > 0:
             SelfAttentionBlock = _optional_import_self_attention_block()
             self.neck = nn.ModuleList(
-                [SelfAttentionBlock(self.feat_dim, num_heads=int(neck_num_heads)) for _ in range(int(num_neck))]
+                [
+                    SelfAttentionBlock(
+                        self.feat_dim,
+                        num_heads=int(neck_num_heads),
+                        drop=float(neck_drop),
+                        attn_drop=float(neck_drop),
+                    )
+                    for _ in range(int(num_neck))
+                ]
             )
         else:
             self.neck = nn.ModuleList()
+        
+        neck_drop_path = drop_path["neck"] if drop_path is not None else 0.0
+        for neck in self.neck:
+            neck.sample_drop_ratio = neck_drop_path
 
         self.norm_bb = norm_layer(self.feat_dim)
         self.norm_neck = norm_layer(self.feat_dim) if int(num_neck) > 0 else nn.Identity()
