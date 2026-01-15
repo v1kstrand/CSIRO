@@ -347,6 +347,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             raise ValueError(f"Unknown out_format: {self.out_format}")
 
         if int(num_neck) > 0:
+            neck_drop_path = drop_path["neck"] if drop_path is not None else 0.0
             SelfAttentionBlock = _optional_import_self_attention_block()
             self.neck = nn.ModuleList(
                 [
@@ -355,16 +356,13 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                         num_heads=int(neck_num_heads),
                         drop=float(neck_drop),
                         attn_drop=float(neck_drop),
+                        drop_path= float(neck_drop_path)
                     )
                     for _ in range(int(num_neck))
                 ]
             )
         else:
             self.neck = nn.ModuleList()
-        
-        neck_drop_path = drop_path["neck"] if drop_path is not None else 0.0
-        for neck in self.neck:
-            neck.sample_drop_ratio = neck_drop_path
 
         self.norm_bb = norm_layer(self.feat_dim)
         self.norm_neck = norm_layer(self.feat_dim) if int(num_neck) > 0 else nn.Identity()
