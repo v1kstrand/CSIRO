@@ -314,8 +314,6 @@ def predict_ensemble(
 
     def _predict_with_models(models: list[torch.nn.Module]) -> torch.Tensor:
         for model in models:
-            if hasattr(model, "set_train"):
-                model.set_train(False)
             model.eval()
 
         preds: list[torch.Tensor] = []
@@ -335,8 +333,7 @@ def predict_ensemble(
                     params = _trainable_params(model)
                     if params:
                         snap = [p.detach().clone() for p in params]
-                        if hasattr(model, "set_train"):
-                            model.set_train(True)
+                        model.train()
                         for _ in range(int(ttt_steps)):
                             with autocast_context(device, dtype=trainable_dtype):
                                 if x.ndim == 5:
@@ -357,8 +354,7 @@ def predict_ensemble(
                                 for p, g in zip(params, grads):
                                     if g is not None:
                                         p.add_(g, alpha=-float(ttt_lr))
-                        if hasattr(model, "set_train"):
-                            model.set_train(False)
+                        model.eval()
                 with torch.no_grad(), ctx:
                     if x.ndim == 5:
                         x_tta, t = _split_tta_batch(x)
@@ -450,8 +446,6 @@ def predict_ensemble_tiled(
 
     def _predict_with_models(models: list[torch.nn.Module]) -> torch.Tensor:
         for model in models:
-            if hasattr(model, "set_train"):
-                model.set_train(False)
             model.eval()
 
         preds: list[torch.Tensor] = []
@@ -473,8 +467,7 @@ def predict_ensemble_tiled(
                     params = _trainable_params(model)
                     if params:
                         snap = [p.detach().clone() for p in params]
-                        if hasattr(model, "set_train"):
-                            model.set_train(True)
+                        model.train()
                         for _ in range(int(ttt_steps)):
                             with autocast_context(device, dtype=trainable_dtype):
                                 if x.ndim == 6:
@@ -498,8 +491,7 @@ def predict_ensemble_tiled(
                                 for p, g in zip(params, grads):
                                     if g is not None:
                                         p.add_(g, alpha=-float(ttt_lr))
-                        if hasattr(model, "set_train"):
-                            model.set_train(False)
+                        model.eval()
                 with torch.no_grad(), ctx:
                     if x.ndim == 6:
                         b, t, tiles, c, h, w = x.shape
@@ -696,8 +688,6 @@ def ttt_sweep_cv(
             params_list = _make_params(models)
 
             for model in models:
-                if hasattr(model, "set_train"):
-                    model.set_train(False)
                 model.eval()
 
             for batch_idx, batch in enumerate(dl):
@@ -746,8 +736,6 @@ def ttt_sweep_cv(
                                 for p, g in zip(params, grads):
                                     if g is not None:
                                         p.add_(g, alpha=-float(lr))
-                        if hasattr(model, "set_train"):
-                            model.set_train(False)
                         model.eval()
                         with torch.no_grad(), autocast_context(device, dtype=trainable_dtype):
                             p_ttt = _forward_model(model, x)
@@ -772,8 +760,6 @@ def ttt_sweep_cv(
         for run_states in fold_runs:
             models = _make_models(run_states)
             for model in models:
-                if hasattr(model, "set_train"):
-                    model.set_train(False)
                 model.eval()
             run_models.append(models)
             run_params.append(_make_params(models))
@@ -828,8 +814,6 @@ def ttt_sweep_cv(
                                 for p, g in zip(params, grads):
                                     if g is not None:
                                         p.add_(g, alpha=-float(lr))
-                        if hasattr(model, "set_train"):
-                            model.set_train(False)
                         model.eval()
                         with torch.no_grad(), autocast_context(device, dtype=trainable_dtype):
                             p_ttt = _forward_model(model, x)

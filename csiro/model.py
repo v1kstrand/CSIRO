@@ -108,12 +108,14 @@ class TiledDINOv3Regressor(nn.Module):
         neck_num_heads: int = 12,
         backbone_dtype: torch.dtype | None = None,
         pred_space: str = "log",
+        neck_rope: bool = True,
     ):
         super().__init__()
         self.backbone = backbone
         self.backbone_dtype = backbone_dtype
         self.backbone_grad = False
         self.pred_space = _normalize_pred_space(pred_space)
+        self.neck_rope = bool(neck_rope)
 
         feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():
@@ -156,7 +158,6 @@ class TiledDINOv3Regressor(nn.Module):
                     tokens = block(tokens)
                 else:
                     assert False, "SelfAttentionBlock requires rope"
-                tokens = block(tokens)
 
         cls = tokens[:, 0, :]
         return self.norm(cls)
@@ -170,12 +171,6 @@ class TiledDINOv3Regressor(nn.Module):
         cls_right = self._tile_cls(x_right)
         fused = torch.cat([cls_left, cls_right], dim=1)
         return self.head(fused)
-
-    def set_train(self, train: bool = True) -> None:
-        self.neck.train(train)
-        self.head.train(train)
-        self.norm.train(train)
-
 
     @torch.no_grad()
     def init(self) -> None:
@@ -283,16 +278,6 @@ class TiledDINOv3Regressor3(TiledDINOv3Regressor):
         green, clover, dead = self._split_components(fused)
         return self._compose_outputs(green, clover, dead)
 
-    def set_train(self, train: bool = True) -> None:
-        self.neck.train(train)
-        self.norm.train(train)
-        if self.head_style == "multi":
-            self.head_green.train(train)
-            self.head_clover.train(train)
-            self.head_dead.train(train)
-        else:
-            self.head.train(train)
-
     @torch.no_grad()
     def init(self) -> None:
         modules = [*self.neck.modules(), *self.norm.modules()]
@@ -322,8 +307,6 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         neck_rope: bool = True,
     ):
         super().__init__()
-        
-        num_regs = backbone.n_storage_tokens + 1 
         head_style = str(head_style).strip().lower()
         if head_style not in ("single", "multi"):
             raise ValueError(f"head_style must be 'single' or 'multi' (got {head_style})")
@@ -331,14 +314,13 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.backbone_dtype = backbone_dtype
         self.backbone_grad = False
         self.pred_space = _normalize_pred_space(pred_space)
-        self.out_format = out_format
+        self.out_format = str(out_format).strip().lower()
         self.neck_rope = bool(neck_rope)
+        self.num_regs = backbone.n_storage_tokens + 1 
 
         feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():
             p.requires_grad_(False)
-        self.backbone.eval()
-        self.num_regs = num_regs
 
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
@@ -346,8 +328,10 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             self.out_dim = self.feat_dim
         elif self.out_format == "cat_cls":
             self.out_dim = self.feat_dim * 2
-        else:
+        elif self.out_format == "cat_cls_w_mean":
             self.out_dim = self.feat_dim * 3
+        else:
+            raise ValueError(f"Unknown out_format: {self.out_format}")
 
         if int(num_neck) > 0:
             SelfAttentionBlock = _optional_import_self_attention_block()
@@ -357,7 +341,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         else:
             self.neck = nn.ModuleList()
 
-        self.norm = norm_layer(self.feat_dim)
+        self.norm_bb = norm_layer(self.feat_dim)
+        self.norm_neck = norm_layer(self.feat_dim) if int(num_neck) > 0 else nn.Identity()
         self.head_style = head_style
         if head_style == "multi":
             self.head_green = _build_head(
@@ -432,6 +417,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tok1, rope = _backbone_tokens(self.backbone, x_left)
                 tok2, _ = _backbone_tokens(self.backbone, x_right)
+        tok1 = self.norm_bb(tok1)
+        tok2 = self.norm_bb(tok2)
 
         if tok1.size(1) <= int(self.num_regs):
             raise ValueError(f"Unexpected token length {tok1.size(1)} for num_regs={self.num_regs}.")
@@ -447,7 +434,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             raise ValueError(f"Patch tokens must form a square grid (got {n_tok}).")
         if p % 2 != 0:
             raise ValueError(f"Grid size P must be even for 1x2 pooling (got {p}).")
-
+        
         grid1 = patch1.reshape(bsz, p, p, dim)
         grid2 = patch2.reshape(bsz, p, p, dim)
         grid1_half = grid1.reshape(bsz, p, p // 2, 2, dim).mean(dim=3)
@@ -456,12 +443,16 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         tok_grid = grid_full.reshape(bsz, p * p, dim)
 
         tokens = torch.cat([cls1, cls2, regs1, regs2, tok_grid], dim=1)
+        rope_neck = rope if self.neck_rope else None
         for block in self.neck:
             try:
-                tokens = block(tokens, rope)
+                tokens = block(tokens, rope_neck)
             except TypeError:
-                assert False, "SelfAttentionBlock requires rope"
-        tokens = self.norm(tokens)
+                if rope_neck is None:
+                    tokens = block(tokens)
+                else:
+                    assert False, "SelfAttentionBlock requires rope"
+        tokens = self.norm_neck(tokens)
         
         if self.out_format == "mean":
             return tokens.mean(dim=1)
@@ -472,6 +463,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             cls1, cls2 = tokens[:, 0, :], tokens[:, 1, :]
             mean = tokens[:, 2:, :].mean(dim=1)
             return torch.cat([cls1, cls2, mean], dim=1)
+        raise ValueError(f"Unknown out_format: {self.out_format}")
 
 
 
@@ -480,22 +472,12 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         green, clover, dead = self._split_components(feats)
         return self._compose_outputs(green, clover, dead)
 
-    def set_train(self, train: bool = True) -> None:
-        self.neck.train(train)
-        self.norm.train(train)
-        if self.head_style == "multi":
-            self.head_green.train(train)
-            self.head_clover.train(train)
-            self.head_dead.train(train)
-        else:
-            self.head.train(train)
-
     def set_backbone_grad(self, train: bool = True) -> None:
         self.backbone_grad = bool(train)
 
     @torch.no_grad()
     def init(self) -> None:
-        modules = [*self.neck.modules(), *self.norm.modules()]
+        modules = [*self.neck.modules(), *self.norm_bb.modules(), *self.norm_neck.modules()]
         if self.head_style == "multi":
             modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
         else:

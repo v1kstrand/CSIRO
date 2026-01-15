@@ -340,7 +340,7 @@ def train_one_fold(
         lr = cos_sin_lr(int(ep), int(epochs), float(lr_start), float(lr_final))
         set_optimizer_lr(opt, lr)
 
-        model.set_train(True)
+        model.train()
         running = 0.0
         n_seen = 0
 
@@ -397,7 +397,7 @@ def train_one_fold(
         do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
         score = None
         if do_eval:
-            model.set_train(False)
+            model.eval()
             score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
             if top_k > 0:
                 state_k = _save_parts(model)
@@ -477,7 +477,7 @@ def eval_global_wr2_ensemble(
 ) -> float:
     for model in models:
         if hasattr(model, "set_train"):
-            model.set_train(False)
+            model.eval()
         model.eval()
 
     w5 = w_vec.to(device).view(1, -1)
