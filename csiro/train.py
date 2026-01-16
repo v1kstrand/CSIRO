@@ -928,6 +928,10 @@ def run_groupkfold_cv(
     finally:
         if comet_exp is not None:
             if fold_scores:
+                total_folds = int(max_folds) if max_folds is not None else int(n_splits)
+                if len(fold_scores) < int(total_folds):
+                    comet_exp.end()
+                    return
                 fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
                 comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
                 comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
