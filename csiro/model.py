@@ -490,7 +490,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
 
     @torch.no_grad()
     def init(self) -> None:
-        modules = [*self.neck.modules(), *self.norm_bb.modules(), *self.norm_neck.modules()]
+        modules = [*self.neck.modules(), *self.norm_neck.modules()]
         if self.head_style == "multi":
             modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
         else:
