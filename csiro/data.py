@@ -435,14 +435,20 @@ class TiledSharedTTADataset(Dataset):
             left = full.crop((0, 0, 1000, 1000))
             right = full.crop((1000, 0, 2000, 1000))
             if self._jitter is not None:
-                jitter_fn = T.ColorJitter.get_params(
+                params = T.ColorJitter.get_params(
                     self._jitter.brightness,
                     self._jitter.contrast,
                     self._jitter.saturation,
                     self._jitter.hue,
                 )
-                left = jitter_fn(left)
-                right = jitter_fn(right)
+                left = T.functional.adjust_brightness(left, params[0])
+                left = T.functional.adjust_contrast(left, params[1])
+                left = T.functional.adjust_saturation(left, params[2])
+                left = T.functional.adjust_hue(left, params[3])
+                right = T.functional.adjust_brightness(right, params[0])
+                right = T.functional.adjust_contrast(right, params[1])
+                right = T.functional.adjust_saturation(right, params[2])
+                right = T.functional.adjust_hue(right, params[3])
             left = self.post(self.resize(left))
             right = self.post(self.resize(right))
             outs.append(torch.stack([left, right], dim=0))
