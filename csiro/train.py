@@ -233,6 +233,7 @@ def train_one_fold(
     tau_neg: float | None = None,
     out_format: str | None = None,
     neck_rope: bool | None = None,
+    rope_rescale: float | None = None,
     neck_drop: float | None = None,
     drop_path: dict[str, float] | None = None,
     top_k_weights: int | None = None,
@@ -307,6 +308,9 @@ def train_one_fold(
         if neck_rope is None:
             neck_rope = bool(DEFAULTS.get("neck_rope", True))
         model_kwargs["neck_rope"] = bool(neck_rope)
+        if rope_rescale is None:
+            rope_rescale = DEFAULTS.get("rope_rescale", None)
+        model_kwargs["rope_rescale"] = rope_rescale
         if neck_drop is None:
             neck_drop = float(DEFAULTS.get("neck_drop", 0.0))
         model_kwargs["neck_drop"] = float(neck_drop)
@@ -947,6 +951,7 @@ def run_groupkfold_cv(
                         pred_space=str(pred_space),
                         head_style=str(head_style),
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
+                        rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
@@ -978,6 +983,7 @@ def run_groupkfold_cv(
                         pred_space=str(pred_space),
                         head_style=str(head_style),
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
+                        rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),

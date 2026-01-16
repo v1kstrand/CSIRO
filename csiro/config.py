@@ -67,6 +67,7 @@ DEFAULTS: dict[str, Any] = dict(
     pred_space="log",  # [log, gram]
     tile_geom_mode="shared",  # [shared, independent]
     neck_rope=True,
+    rope_rescale=None,
     neck_drop=0.0,
     drop_path=None,
     loss_weights=(1.0, 1.0, 1.0, 0.0, 0.0),

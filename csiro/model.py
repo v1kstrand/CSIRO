@@ -52,24 +52,10 @@ def _backbone_tokens(backbone: nn.Module, x: torch.Tensor) -> tuple[torch.Tensor
 
     tokens = out
     if isinstance(out, dict):
-        if "x_prenorm" in out:
-            tokens = out["x_prenorm"]
-        elif "x_norm_clstoken" in out:
-            cls = out["x_norm_clstoken"]
-            if cls.ndim == 2:
-                cls = cls[:, None, :]
-            patch = out.get("x_norm_patchtokens", None)
-            if patch is not None:
-                tokens = torch.cat([cls, patch], dim=1)
-            else:
-                tokens = cls
+        if "x_postnorm" in out:
+            tokens = out["x_postnorm"]
         else:
-            for k in ("x_norm_clstoken", "cls", "cls_token", "clstoken", "x"):
-                if k in out:
-                    tokens = out[k]
-                    break
-            else:
-                raise ValueError(f"Backbone returned dict with unknown keys: {list(out.keys())}")
+            raise ValueError(f"Backbone returned dict with unknown keys: {list(out.keys())}")
 
     if not isinstance(tokens, torch.Tensor):
         raise TypeError(f"Backbone output must be a Tensor/dict/tuple, got: {type(out)!r}")
@@ -307,6 +293,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         neck_rope: bool = True,
         neck_drop: float = 0.0,
         drop_path: dict[str, float] | None = None,
+        rope_rescale = None
         
     ):
         super().__init__()
@@ -321,7 +308,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.neck_rope = bool(neck_rope)
         self.num_regs = backbone.n_storage_tokens + 1 
         neck_drop = float(neck_drop)
-        if neck_drop < 0.0 or neck_drop > 1.0:
+        if not 0 <=neck_drop <= 1:
             raise ValueError(f"neck_drop must be in [0,1] (got {neck_drop}).")
         if drop_path is not None:
             assert isinstance(drop_path, dict) and "backbone" in drop_path and "neck" in drop_path
@@ -334,6 +321,9 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         if drop_path is not None and drop_path["backbone"] > 0.0:
             for i in range(len(self.backbone.blocks)):
                 self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
+        
+        assert rope_rescale is None or 1 <= rope_rescale <= 2
+        backbone.rope_embed.rescale_coords = rope_rescale
 
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
@@ -364,7 +354,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         else:
             self.neck = nn.ModuleList()
 
-        self.norm_bb = norm_layer(self.feat_dim)
+        #self.norm_bb = norm_layer(self.feat_dim)
         self.norm_neck = norm_layer(self.feat_dim) if int(num_neck) > 0 else nn.Identity()
         self.head_style = head_style
         if head_style == "multi":
@@ -440,8 +430,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tok1, rope = _backbone_tokens(self.backbone, x_left)
                 tok2, _ = _backbone_tokens(self.backbone, x_right)
-        tok1 = self.norm_bb(tok1)
-        tok2 = self.norm_bb(tok2)
+        #tok1 = self.norm_bb(tok1)
+        #tok2 = self.norm_bb(tok2)
 
         if tok1.size(1) <= int(self.num_regs):
             raise ValueError(f"Unexpected token length {tok1.size(1)} for num_regs={self.num_regs}.")
