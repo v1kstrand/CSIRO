@@ -47,6 +47,45 @@ def _maybe_preprocess_image(img: Image.Image, enabled: bool) -> Image.Image:
         return img
     return _clean_image(img)
 
+def _as_float(val):
+    if val is None:
+        return None
+    if torch.is_tensor(val):
+        return float(val.item())
+    return float(val)
+
+
+def _apply_color_jitter_with_params(img: Image.Image, params) -> Image.Image:
+    if callable(params):
+        return params(img)
+    if isinstance(params, (tuple, list)) and len(params) == 5:
+        fn_idx, b, c, s, h = params
+        b = _as_float(b)
+        c = _as_float(c)
+        s = _as_float(s)
+        h = _as_float(h)
+        for fn_id in fn_idx.tolist():
+            if fn_id == 0 and b is not None:
+                img = T.functional.adjust_brightness(img, b)
+            elif fn_id == 1 and c is not None:
+                img = T.functional.adjust_contrast(img, c)
+            elif fn_id == 2 and s is not None:
+                img = T.functional.adjust_saturation(img, s)
+            elif fn_id == 3 and h is not None:
+                img = T.functional.adjust_hue(img, h)
+        return img
+    if isinstance(params, (tuple, list)) and len(params) == 4:
+        b, c, s, h = (_as_float(p) for p in params)
+        if b is not None:
+            img = T.functional.adjust_brightness(img, b)
+        if c is not None:
+            img = T.functional.adjust_contrast(img, c)
+        if s is not None:
+            img = T.functional.adjust_saturation(img, s)
+        if h is not None:
+            img = T.functional.adjust_hue(img, h)
+        return img
+    raise ValueError("Unexpected ColorJitter params format.")
 
 def load_train_wide(
     csv_path: str,
@@ -355,14 +394,14 @@ class TiledTTADataset(Dataset):
             l = self._apply_op(left, k, do_hflip)
             r = self._apply_op(right, k, do_hflip)
             if self._jitter is not None:
-                jitter_fn = T.ColorJitter.get_params(
+                params = T.ColorJitter.get_params(
                     self._jitter.brightness,
                     self._jitter.contrast,
                     self._jitter.saturation,
                     self._jitter.hue,
                 )
-                l = jitter_fn(l)
-                r = jitter_fn(r)
+                l = _apply_color_jitter_with_params(l, params)
+                r = _apply_color_jitter_with_params(r, params)
             outs.append(torch.stack([self.post(l), self.post(r)], dim=0))
 
         x_tta = torch.stack(outs, dim=0)
@@ -441,15 +480,8 @@ class TiledSharedTTADataset(Dataset):
                     self._jitter.saturation,
                     self._jitter.hue,
                 )
-                params = [float(p) for p in params]
-                left = T.functional.adjust_brightness(left, params[0])
-                left = T.functional.adjust_contrast(left, params[1])
-                left = T.functional.adjust_saturation(left, params[2])
-                left = T.functional.adjust_hue(left, params[3])
-                right = T.functional.adjust_brightness(right, params[0])
-                right = T.functional.adjust_contrast(right, params[1])
-                right = T.functional.adjust_saturation(right, params[2])
-                right = T.functional.adjust_hue(right, params[3])
+                left = _apply_color_jitter_with_params(left, params)
+                right = _apply_color_jitter_with_params(right, params)
             left = self.post(self.resize(left))
             right = self.post(self.resize(right))
             outs.append(torch.stack([left, right], dim=0))
