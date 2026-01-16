@@ -441,6 +441,7 @@ class TiledSharedTTADataset(Dataset):
                     self._jitter.saturation,
                     self._jitter.hue,
                 )
+                params = [float(p) for p in params]
                 left = T.functional.adjust_brightness(left, params[0])
                 left = T.functional.adjust_contrast(left, params[1])
                 left = T.functional.adjust_saturation(left, params[2])
