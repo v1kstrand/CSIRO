@@ -654,6 +654,7 @@ def run_groupkfold_cv(
     fold_model_scores: list[list[float]] = []
     fold_states: list[list[dict[str, Any]]] = []
     start_fold = 0
+    start_model = 0
     state = None
 
     if cv_resume:
@@ -667,10 +668,24 @@ def run_groupkfold_cv(
             fold_model_scores[:] = [list(map(float, xs)) for xs in state.get("fold_model_scores", [])]
             fold_states[:] = list(state.get("states", []))
             last_completed = state.get("last_completed_fold")
+            last_completed_model = state.get("last_completed_model")
             if last_completed is None:
                 last_completed = len(fold_states) - 1
-            start_fold = int(last_completed) + 1
-            print(f"INFO: Resuming from fold {start_fold}")
+            if last_completed_model is None:
+                if fold_states:
+                    last_completed_model = len(fold_states[int(last_completed)]) - 1
+                else:
+                    last_completed_model = -1
+            if int(last_completed) < 0:
+                start_fold = 0
+                start_model = 0
+            else:
+                start_fold = int(last_completed)
+                start_model = int(last_completed_model) + 1
+            if start_model >= int(n_models):
+                start_fold += 1
+                start_model = 0
+            print(f"INFO: Resuming from fold {start_fold}, model {start_model}")
             
     exp_key = comet_exp = None
     if comet_exp_name is not None:
@@ -695,7 +710,7 @@ def run_groupkfold_cv(
             else:
                 comet_exp.log_parameter(k, str(v)[:40])
 
-    def _save_cv_state(completed: bool, last_fold: int) -> None:
+    def _save_cv_state(completed: bool, last_fold: int, last_model: int) -> None:
         if cv_state_path is None:
             return
         os.makedirs(save_output_dir, exist_ok=True)
@@ -703,6 +718,7 @@ def run_groupkfold_cv(
             dict(
                 completed=bool(completed),
                 last_completed_fold=int(last_fold),
+                last_completed_model=int(last_model),
                 fold_scores=fold_scores,
                 fold_model_scores=fold_model_scores,
                 states=fold_states,
@@ -725,7 +741,13 @@ def run_groupkfold_cv(
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             model_states_best: list[dict[str, Any]] = []
+            if int(fold_idx) < len(fold_states):
+                model_states = list(fold_states[int(fold_idx)])
+            if int(fold_idx) < len(fold_model_scores):
+                model_scores = list(fold_model_scores[int(fold_idx)])
             for model_idx in range(int(n_models)):
+                if int(fold_idx) == int(start_fold) and int(model_idx) < int(start_model):
+                    continue
                 train_tfms = train_tfms_list[int(model_idx)]
                 if tiled_inp:
                     if use_shared_geom:
@@ -821,9 +843,24 @@ def run_groupkfold_cv(
                         best_score=float(result["best_score"]),
                     )
                 )
+                if int(fold_idx) < len(fold_states):
+                    fold_states[int(fold_idx)] = model_states
+                else:
+                    fold_states.append(model_states)
+                if int(fold_idx) < len(fold_model_scores):
+                    fold_model_scores[int(fold_idx)] = model_scores
+                else:
+                    fold_model_scores.append(model_scores)
+                _save_cv_state(False, int(fold_idx), int(model_idx))
 
-            fold_model_scores.append(model_scores)
-            fold_states.append(model_states)
+            if int(fold_idx) < len(fold_model_scores):
+                fold_model_scores[int(fold_idx)] = model_scores
+            else:
+                fold_model_scores.append(model_scores)
+            if int(fold_idx) < len(fold_states):
+                fold_states[int(fold_idx)] = model_states
+            else:
+                fold_states.append(model_states)
 
             va_subset = Subset(ds_va_view, va_idx)
             num_workers = train_kwargs.get("num_workers", None)
@@ -882,12 +919,12 @@ def run_groupkfold_cv(
                 fold_scores.append(float(fold_score_kmean))
             else:
                 fold_scores.append(float(fold_score_best))
-            _save_cv_state(False, int(fold_idx))
+            _save_cv_state(False, int(fold_idx), int(n_models) - 1)
 
         total_folds = int(max_folds) if max_folds is not None else int(n_splits)
         if fold_scores:
             last_fold = int(min(len(fold_scores), total_folds) - 1)
-            _save_cv_state(len(fold_scores) >= total_folds, last_fold)
+            _save_cv_state(len(fold_scores) >= total_folds, last_fold, int(n_models) - 1)
     finally:
         if comet_exp is not None:
             if fold_scores:
