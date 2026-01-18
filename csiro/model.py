@@ -293,7 +293,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         neck_rope: bool = True,
         neck_drop: float = 0.0,
         drop_path: dict[str, float] | None = None,
-        rope_rescale = None
+        rope_rescale = None,
+        neck_ffn: bool = True,
         
     ):
         super().__init__()
@@ -346,7 +347,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                         num_heads=int(neck_num_heads),
                         drop=float(neck_drop),
                         attn_drop=float(neck_drop),
-                        drop_path= float(neck_drop_path)
+                        drop_path= float(neck_drop_path),
+                        use_ffn=bool(neck_ffn),
                     )
                     for _ in range(int(num_neck))
                 ]
@@ -518,6 +520,7 @@ class FullDINOv3RegressorRect3(nn.Module):
         neck_drop: float = 0.0,
         drop_path: dict[str, float] | None = None,
         rope_rescale=None,
+        neck_ffn: bool = True,
     ):
         super().__init__()
         head_style = str(head_style).strip().lower()
@@ -570,6 +573,7 @@ class FullDINOv3RegressorRect3(nn.Module):
                         drop=float(neck_drop),
                         attn_drop=float(neck_drop),
                         drop_path=float(neck_drop_path),
+                        use_ffn=bool(neck_ffn),
                     )
                     for _ in range(int(num_neck))
                 ]

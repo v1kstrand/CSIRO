@@ -80,6 +80,7 @@ DEFAULTS: dict[str, Any] = dict(
     head_drop=0.1,
     head_depth=4,
     num_neck=1,
+    neck_ffn=True,
     top_k_weights=0,
     clip_val=1.0,
     n_models=1,

@@ -189,6 +189,7 @@ def _build_model_from_state(
             model_kwargs["neck_drop"] = float(state.get("neck_drop", DEFAULTS.get("neck_drop", 0.0)))
             model_kwargs["drop_path"] = state.get("drop_path", DEFAULTS.get("drop_path", None))
             model_kwargs["rope_rescale"] = state.get("rope_rescale", DEFAULTS.get("rope_rescale", None))
+            model_kwargs["neck_ffn"] = bool(state.get("neck_ffn", DEFAULTS.get("neck_ffn", True)))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -244,6 +245,7 @@ def train_one_fold(
     rope_rescale: float | None = None,
     neck_drop: float | None = None,
     drop_path: dict[str, float] | None = None,
+    neck_ffn: bool | None = None,
     top_k_weights: int | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
@@ -322,6 +324,9 @@ def train_one_fold(
         if neck_drop is None:
             neck_drop = float(DEFAULTS.get("neck_drop", 0.0))
         model_kwargs["neck_drop"] = float(neck_drop)
+        if neck_ffn is None:
+            neck_ffn = bool(DEFAULTS.get("neck_ffn", True))
+        model_kwargs["neck_ffn"] = bool(neck_ffn)
         if drop_path is None:
             drop_path = DEFAULTS.get("drop_path", None)
         model_kwargs["drop_path"] = drop_path
@@ -984,6 +989,7 @@ def run_groupkfold_cv(
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
                         rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                        neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=result["state"],
@@ -1016,6 +1022,7 @@ def run_groupkfold_cv(
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
                         rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                        neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
                         parts=best_parts,
