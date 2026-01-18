@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 
@@ -20,8 +21,10 @@ IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
 DEFAULT_SEED: int = 420
 DEFAULT_LOSS_WEIGHTS: tuple[float, float, float, float, float] = (0.1, 0.1, 0.1, 0.2, 0.5)
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
-DEFAULT_DINO_ROOT: str = os.getenv("DEFAULT_DINO_ROOT")
+DEFAULT_DINO_ROOT: str = os.getenv("DEFAULT_DINO_ROOT") or str(_REPO_ROOT / "dinov3")
 DINO_B_WEIGHTS_PATH: str | None = os.getenv("DINO_B_WEIGHTS_PATH")
 DINO_L_WEIGHTS_PATH: str | None = os.getenv("DINO_L_WEIGHTS_PATH")
 
@@ -54,7 +57,7 @@ DEFAULTS: dict[str, Any] = dict(
     max_updates=0,
     samples_per_update=0,
     eval_every=1,
-    warmup_updates=0,
+    warmup_steps=0,
     batch_size=124,
     wd=1e-4,
     lr_start=3e-4,
@@ -90,7 +93,7 @@ DEFAULTS: dict[str, Any] = dict(
     img_preprocess=True,
     bcs_range=(0.2, 0.4),
     hue_range=(0.02, 0.08),
-    tiled_inp=True,
+    tiled_inp=False,
     backbone_dtype="fp16",  # [fp16, bf16, fp32]
     trainable_dtype="fp16",  # [fp16, bf16, fp32]
     save_output_dir="/notebooks/kaggle/csiro/output"

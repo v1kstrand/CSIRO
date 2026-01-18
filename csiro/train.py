@@ -206,7 +206,7 @@ def train_one_fold(
     epochs: int = 5,
     max_updates: int | None = None,
     samples_per_update: int | None = None,
-    warmup_updates: int | None = None,
+    warmup_steps: int | None = None,
     lr_start: float = 3e-4,
     lr_final: float = 5e-5,
     batch_size: int = 128,
@@ -368,9 +368,9 @@ def train_one_fold(
     if eval_every is None:
         eval_every = int(DEFAULTS.get("eval_every", 1))
     eval_every = max(1, int(eval_every))
-    if warmup_updates is None:
-        warmup_updates = int(DEFAULTS.get("warmup_updates", 0))
-    warmup_updates = max(0, int(warmup_updates))
+    if warmup_steps is None:
+        warmup_steps = int(DEFAULTS.get("warmup_steps", 0))
+    warmup_steps = max(0, int(warmup_steps))
     use_step_mode = int(max_updates) > 0
 
     if use_step_mode:
@@ -379,7 +379,7 @@ def train_one_fold(
             accum_steps = max(1, int(math.ceil(samples_per_update / max(int(train_bs), 1))))
 
         total_updates = int(max_updates)
-        warmup_updates = min(int(warmup_updates), int(total_updates))
+        warmup_steps = min(int(warmup_steps), int(total_updates))
         update_idx = 0
         running = 0.0
         n_seen = 0
@@ -388,11 +388,11 @@ def train_one_fold(
 
         while update_idx < total_updates:
             curr_update = int(update_idx) + 1
-            if int(warmup_updates) > 0 and int(curr_update) <= int(warmup_updates):
-                lr = float(lr_start) * (float(curr_update) / float(warmup_updates))
+            if int(warmup_steps) > 0 and int(curr_update) <= int(warmup_steps):
+                lr = float(lr_start) * (float(curr_update) / float(warmup_steps))
             else:
-                cosine_updates = max(int(total_updates) - int(warmup_updates), 1)
-                cosine_step = int(curr_update) - int(warmup_updates)
+                cosine_updates = max(int(total_updates) - int(warmup_steps), 1)
+                cosine_step = int(curr_update) - int(warmup_steps)
                 lr = cos_sin_lr(int(cosine_step), int(cosine_updates), float(lr_start), float(lr_final))
             set_optimizer_lr(opt, lr)
 
@@ -515,7 +515,13 @@ def train_one_fold(
         p_bar = tqdm(range(1, int(epochs) + 1))
 
         for ep in p_bar:
-            lr = cos_sin_lr(int(ep), int(epochs), float(lr_start), float(lr_final))
+            warmup_epochs = min(int(warmup_steps), int(epochs))
+            if warmup_epochs > 0 and int(ep) <= int(warmup_epochs):
+                lr = float(lr_start) * (float(ep) / float(warmup_epochs))
+            else:
+                cosine_epochs = max(int(epochs) - int(warmup_epochs), 1)
+                cosine_step = int(ep) - int(warmup_epochs)
+                lr = cos_sin_lr(int(cosine_step) + 1, int(cosine_epochs), float(lr_start), float(lr_final))
             set_optimizer_lr(opt, lr)
 
             model.train()
@@ -797,7 +803,9 @@ def run_groupkfold_cv(
         hue_range=tuple(hue_range),
     )
     train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
-    rect_train_tfms_list = [T.Compose([T.RandomHorizontalFlip(p=0.5), t]) for t in jitter_tfms]
+    rect_train_tfms_list = [
+        T.Compose([T.RandomHorizontalFlip(p=0.5), T.RandomVerticalFlip(p=0.5), t]) for t in jitter_tfms
+    ]
     train_post_ops = [post_tfms()]
     if cutout_p > 0.0:
         train_post_ops.append(T.RandomErasing(p=float(cutout_p)))
