@@ -1,4 +1,4 @@
-__pycache__/
+#__pycache__/
 *.py[cod]
 .Python
 *.egg-info/
@@ -10,9 +10,9 @@ venv/
 .ipynb_checkpoints/
 
 # data / weights
-data/
-datasets/
-weights/
+#data/
+#datasets/
+#weights/
 *.pth
 *.pt
 *.ckpt
