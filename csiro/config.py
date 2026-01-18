@@ -24,7 +24,7 @@ DEFAULT_LOSS_WEIGHTS: tuple[float, float, float, float, float] = (0.1, 0.1, 0.1,
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
-DEFAULT_DINO_ROOT: str = os.getenv("DEFAULT_DINO_ROOT") or str(_REPO_ROOT / "dinov3")
+DEFAULT_DINO_ROOT: str = str(_REPO_ROOT / "dinov3")
 DINO_B_WEIGHTS_PATH: str | None = os.getenv("DINO_B_WEIGHTS_PATH")
 DINO_L_WEIGHTS_PATH: str | None = os.getenv("DINO_L_WEIGHTS_PATH")
 
