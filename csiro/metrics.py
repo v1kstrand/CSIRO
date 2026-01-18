@@ -6,8 +6,6 @@ from .amp import autocast_context
 
 @torch.no_grad()
 def eval_global_wr2(model, dl_va, w_vec: torch.Tensor, device: str | torch.device = "cuda") -> float:
-    if hasattr(model, "set_train"):
-        model.eval()
     model.eval()
     w5 = w_vec.to(device).view(1, -1)
     ss_res = torch.zeros((), device=device)

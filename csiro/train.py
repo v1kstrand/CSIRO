@@ -9,7 +9,7 @@ import uuid
 import numpy as np
 import torch
 import torchvision.transforms as T
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
 
@@ -25,7 +25,12 @@ from .ensemble_utils import (
 )
 from .losses import NegativityPenaltyLoss, WeightedMSELoss, WeightedSmoothL1Loss
 from .metrics import eval_global_wr2
-from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3
+from .model import (
+    TiledDINOv3Regressor,
+    TiledDINOv3Regressor3,
+    TiledDINOv3RegressorStitched3,
+    FullDINOv3RegressorRect3,
+)
 from .transforms import base_train_comp, post_tfms
 from .utils import build_color_jitter_sweep, filter_kwargs
 
@@ -79,6 +84,8 @@ def _postprocess_mass_balance(pred: torch.Tensor) -> torch.Tensor:
 def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
     name = str(model_name or "").strip().lower()
     if not tiled_inp:
+        if name in ("rect_full", "full_rect", "rect"):
+            return FullDINOv3RegressorRect3
         raise ValueError("Non-tiled models are no longer supported. Set tiled_inp=True.")
     if not name or name in ("tiled_base", "tiled"):
         return TiledDINOv3Regressor
@@ -173,14 +180,15 @@ def _build_model_from_state(
         backbone_dtype=backbone_dtype,
         pred_space=pred_space,
     )
-    if model_cls in (TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3):
+    if model_cls in (TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3, FullDINOv3RegressorRect3):
         model_kwargs["head_style"] = head_style
-        if model_cls is TiledDINOv3RegressorStitched3:
+        if model_cls in (TiledDINOv3RegressorStitched3, FullDINOv3RegressorRect3):
             out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
             model_kwargs["out_format"] = out_format
             model_kwargs["neck_rope"] = bool(state.get("neck_rope", DEFAULTS.get("neck_rope", True)))
             model_kwargs["neck_drop"] = float(state.get("neck_drop", DEFAULTS.get("neck_drop", 0.0)))
             model_kwargs["drop_path"] = state.get("drop_path", DEFAULTS.get("drop_path", None))
+            model_kwargs["rope_rescale"] = state.get("rope_rescale", DEFAULTS.get("rope_rescale", None))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -301,7 +309,7 @@ def train_one_fold(
     )
     if model_cls is TiledDINOv3Regressor3:
         model_kwargs["head_style"] = head_style
-    if model_cls is TiledDINOv3RegressorStitched3:
+    if model_cls in (TiledDINOv3RegressorStitched3, FullDINOv3RegressorRect3):
         if out_format is None:
             out_format = DEFAULTS.get("out_format", "cat_cls")
         model_kwargs["out_format"] = str(out_format).strip().lower()
@@ -730,40 +738,39 @@ def run_groupkfold_cv(
     trainable_dtype: str | torch.dtype | None = None,
     comet_exp_name: str | None = None,
     config_name: str = "",
-    n_models: int = 1,
     img_size: int | None = None,
     return_details: bool = False,
     save_output_dir: str | None = None,
-    cv_params: dict[str, Any] | None = None,
+    cv_cfg: int | None = None,
     max_folds: int | None = None,
     **train_kwargs,
 ):
-    if cv_params is None:
-        cv_params = DEFAULTS.get("cv_params")
-    if not isinstance(cv_params, dict):
-        raise ValueError("cv_params must be a dict.")
-    if "mode" not in cv_params:
-        raise ValueError("cv_params must include 'mode'.")
-
-    split_mode = str(cv_params["mode"]).lower()
-    n_splits = int(cv_params.get("n_splits", DEFAULTS["cv_params"]["n_splits"]))
+    if "cv_params" in train_kwargs:
+        raise ValueError("cv_params is no longer supported; use cv_cfg instead.")
+    if cv_cfg is None:
+        cv_cfg = int(DEFAULTS.get("cv_cfg", 1))
+    cv_cfg = int(cv_cfg)
     if max_folds is None:
-        max_folds = cv_params.get("max_folds", DEFAULTS.get("max_folds", None))
+        max_folds = DEFAULTS.get("max_folds", None)
     max_folds = None if max_folds is None else int(max_folds)
     cv_resume = bool(train_kwargs.pop("cv_resume", DEFAULTS.get("cv_resume", False)))
-    cv_seed: int | None = None
 
-    if split_mode == "gkf":
-        if "cv_seed" not in cv_params:
-            raise ValueError("cv_params must include 'cv_seed' for mode='gkf'.")
-        cv_seed = int(cv_params["cv_seed"])
-        gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_seed))
+    if cv_cfg == 1:
+        n_splits = 5
+        gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=126015)
         groups = wide_df["Sampling_Date"].values
         cv_iter = gkf.split(wide_df, groups=groups)
+    elif cv_cfg == 2:
+        n_splits = 5
+        sgkf = StratifiedGroupKFold(n_splits=int(n_splits), shuffle=True, random_state=82947501)
+        groups = wide_df["Sampling_Date"].values
+        strat = wide_df["State"].astype(str).values
+        cv_iter = sgkf.split(wide_df, y=strat, groups=groups)
     else:
-        raise ValueError(f"Unknown cv mode: {cv_params['mode']}")
+        raise ValueError(f"Unknown cv_cfg: {cv_cfg}")
 
     org_train_kwargs = train_kwargs.copy()
+    n_models = int(train_kwargs.pop("n_models", DEFAULTS["n_models"]))
     inp_train_kwargs = filter_kwargs(train_one_fold, org_train_kwargs)
     bcs_range = train_kwargs.pop("bcs_range", DEFAULTS["bcs_range"])
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
@@ -776,6 +783,11 @@ def run_groupkfold_cv(
     if tile_geom_mode not in ("shared", "independent"):
         raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
     model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
+    full_rect = str(model_name).strip().lower() in ("rect_full", "full_rect", "rect")
+    if full_rect and tiled_inp:
+        raise ValueError("rect_full model requires tiled_inp=False.")
+    if full_rect:
+        tiled_inp = False
     out_format = str(train_kwargs.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
     pred_space = _normalize_pred_space(train_kwargs.get("pred_space", DEFAULTS.get("pred_space", "log")))
     head_style = str(train_kwargs.get("head_style", DEFAULTS.get("head_style", "single"))).strip().lower()
@@ -785,6 +797,7 @@ def run_groupkfold_cv(
         hue_range=tuple(hue_range),
     )
     train_tfms_list = [T.Compose([base_train_comp, t]) for t in jitter_tfms]
+    rect_train_tfms_list = [T.Compose([T.RandomHorizontalFlip(p=0.5), t]) for t in jitter_tfms]
     train_post_ops = [post_tfms()]
     if cutout_p > 0.0:
         train_post_ops.append(T.RandomErasing(p=float(cutout_p)))
@@ -793,6 +806,9 @@ def run_groupkfold_cv(
     train_post = T.Compose(train_post_ops)
     use_shared_geom = tiled_inp and tile_geom_mode == "shared"
     img_size_use = int(img_size or DEFAULTS.get("img_size", 512))
+    rect_resize = (
+        T.Resize((int(img_size_use), int(img_size_use) * 2), antialias=True) if full_rect else None
+    )
     if tiled_inp:
         if use_shared_geom:
             ds_va_view = TiledSharedTransformView(
@@ -803,6 +819,8 @@ def run_groupkfold_cv(
             )
         else:
             ds_va_view = TiledTransformView(dataset, post_tfms())
+    elif full_rect:
+        ds_va_view = TransformView(dataset, T.Compose([rect_resize, post_tfms()]))
     else:
         ds_va_view = TransformView(dataset, post_tfms())
 
@@ -908,7 +926,7 @@ def run_groupkfold_cv(
             for model_idx in range(int(n_models)):
                 if int(fold_idx) == int(start_fold) and int(model_idx) < int(start_model):
                     continue
-                train_tfms = train_tfms_list[int(model_idx)]
+                train_tfms = rect_train_tfms_list[int(model_idx)] if full_rect else train_tfms_list[int(model_idx)]
                 if tiled_inp:
                     if use_shared_geom:
                         ds_tr_view = TiledSharedTransformView(
@@ -922,6 +940,11 @@ def run_groupkfold_cv(
                             dataset,
                             T.Compose([train_tfms, train_post]),
                         )
+                elif full_rect:
+                    ds_tr_view = TransformView(
+                        dataset,
+                        T.Compose([train_tfms, rect_resize, train_post]),
+                    )
                 else:
                     ds_tr_view = TransformView(dataset, T.Compose([train_tfms, train_post]))
                 result = train_one_fold(
@@ -1127,5 +1150,3 @@ def run_groupkfold_cv(
             "std": float(scores.std(ddof=0)),
             "states": fold_states,
         }
-
-

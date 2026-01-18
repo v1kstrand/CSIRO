@@ -498,6 +498,204 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         _init_modules(modules)
 
 
+class FullDINOv3RegressorRect3(nn.Module):
+    def __init__(
+        self,
+        backbone: nn.Module,
+        *,
+        hidden: int = 1024,
+        depth: int = 2,
+        drop: float = 0.1,
+        feat_dim: int | None = None,
+        norm_layer: type[nn.Module] | None = None,
+        num_neck: int = 0,
+        neck_num_heads: int = 12,
+        backbone_dtype: torch.dtype | None = None,
+        pred_space: str = "log",
+        head_style: str = "single",
+        out_format: str = "cat_cls",
+        neck_rope: bool = True,
+        neck_drop: float = 0.0,
+        drop_path: dict[str, float] | None = None,
+        rope_rescale=None,
+    ):
+        super().__init__()
+        head_style = str(head_style).strip().lower()
+        if head_style not in ("single", "multi"):
+            raise ValueError(f"head_style must be 'single' or 'multi' (got {head_style})")
+        self.backbone = backbone
+        self.backbone_dtype = backbone_dtype
+        self.backbone_grad = False
+        self.pred_space = _normalize_pred_space(pred_space)
+        self.out_format = str(out_format).strip().lower()
+        self.neck_rope = bool(neck_rope)
+        self.num_regs = backbone.n_storage_tokens + 1
+        neck_drop = float(neck_drop)
+        if not 0 <= neck_drop <= 1:
+            raise ValueError(f"neck_drop must be in [0,1] (got {neck_drop}).")
+        if drop_path is not None:
+            assert isinstance(drop_path, dict) and "backbone" in drop_path and "neck" in drop_path
+            assert 0.0 <= drop_path["backbone"] <= 1.0 and 0.0 <= drop_path["neck"] <= 1.0
+        drop_path = drop_path or {"backbone": 0.0, "neck": 0.0}
+
+        feat_dim = feat_dim or _infer_feat_dim(backbone)
+        for p in self.backbone.parameters():
+            p.requires_grad_(False)
+        if drop_path is not None and drop_path["backbone"] > 0.0:
+            for i in range(len(self.backbone.blocks)):
+                self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
+
+        assert rope_rescale is None or 1 <= rope_rescale <= 2
+        backbone.rope_embed.rescale_coords = rope_rescale
+
+        self.feat_dim = int(feat_dim)
+        norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
+        if self.out_format == "mean":
+            self.out_dim = self.feat_dim
+        elif self.out_format == "cat_cls":
+            self.out_dim = self.feat_dim
+        elif self.out_format == "cat_cls_w_mean":
+            self.out_dim = self.feat_dim * 2
+        else:
+            raise ValueError(f"Unknown out_format: {self.out_format}")
+
+        if int(num_neck) > 0:
+            neck_drop_path = drop_path["neck"] if drop_path is not None else 0.0
+            SelfAttentionBlock = _optional_import_self_attention_block()
+            self.neck = nn.ModuleList(
+                [
+                    SelfAttentionBlock(
+                        self.feat_dim,
+                        num_heads=int(neck_num_heads),
+                        drop=float(neck_drop),
+                        attn_drop=float(neck_drop),
+                        drop_path=float(neck_drop_path),
+                    )
+                    for _ in range(int(num_neck))
+                ]
+            )
+        else:
+            self.neck = nn.ModuleList()
+
+        self.norm_neck = norm_layer(self.feat_dim) if int(num_neck) > 0 else nn.Identity()
+        self.head_style = head_style
+        if head_style == "multi":
+            self.head_green = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=1,
+                norm_layer=norm_layer,
+            )
+            self.head_clover = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=1,
+                norm_layer=norm_layer,
+            )
+            self.head_dead = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=1,
+                norm_layer=norm_layer,
+            )
+            self.head = nn.ModuleList([self.head_green, self.head_clover, self.head_dead])
+        else:
+            self.head = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=3,
+                norm_layer=norm_layer,
+            )
+
+    def _split_components(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.head_style == "multi":
+            green = self.head_green(feats)
+            clover = self.head_clover(feats)
+            dead = self.head_dead(feats)
+        else:
+            out = self.head(feats)
+            green = out[:, [0]]
+            clover = out[:, [1]]
+            dead = out[:, [2]]
+        return green, clover, dead
+
+    def _compose_outputs(self, green: torch.Tensor, clover: torch.Tensor, dead: torch.Tensor) -> torch.Tensor:
+        if self.pred_space == "log":
+            green_lin = torch.expm1(green)
+            clover_lin = torch.expm1(clover)
+            dead_lin = torch.expm1(dead)
+            gdm_lin = green_lin + clover_lin
+            total_lin = gdm_lin + dead_lin
+            gdm_lin = gdm_lin.clamp_min(-0.999999)
+            total_lin = total_lin.clamp_min(-0.999999)
+            gdm = torch.log1p(gdm_lin)
+            total = torch.log1p(total_lin)
+            return torch.cat([green, clover, dead, gdm, total], dim=1)
+        gdm = green + clover
+        total = gdm + dead
+        return torch.cat([green, clover, dead, gdm, total], dim=1)
+
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 4:
+            raise ValueError(f"Expected input [B,C,H,W], got {tuple(x.shape)}")
+        with torch.set_grad_enabled(self.backbone_grad):
+            with autocast_context(x.device, dtype=self.backbone_dtype):
+                tokens, rope = _backbone_tokens(self.backbone, x)
+
+        if tokens.size(1) <= int(self.num_regs):
+            raise ValueError(f"Unexpected token length {tokens.size(1)} for num_regs={self.num_regs}.")
+        prefix, patches = tokens[:, : int(self.num_regs), :], tokens[:, int(self.num_regs) :, :]
+        cls = prefix[:, :1, :]
+        regs = prefix[:, 1:, :]
+        tokens = torch.cat([cls, regs, patches], dim=1)
+        rope_neck = rope if self.neck_rope else None
+        for block in self.neck:
+            try:
+                tokens = block(tokens, rope_neck)
+            except TypeError:
+                if rope_neck is None:
+                    tokens = block(tokens)
+                else:
+                    assert False, "SelfAttentionBlock requires rope"
+        tokens = self.norm_neck(tokens)
+
+        if self.out_format == "mean":
+            return tokens.mean(dim=1)
+        if self.out_format == "cat_cls":
+            cls = tokens[:, 0, :]
+            return cls
+        if self.out_format == "cat_cls_w_mean":
+            cls = tokens[:, 0, :]
+            mean = tokens[:, 1:, :].mean(dim=1)
+            return torch.cat([cls, mean], dim=1)
+        raise ValueError(f"Unknown out_format: {self.out_format}")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feats = self._encode(x)
+        green, clover, dead = self._split_components(feats)
+        return self._compose_outputs(green, clover, dead)
+
+    def set_backbone_grad(self, train: bool = True) -> None:
+        self.backbone_grad = bool(train)
+
+    @torch.no_grad()
+    def init(self) -> None:
+        modules = [*self.neck.modules(), *self.norm_neck.modules()]
+        if self.head_style == "multi":
+            modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
+        else:
+            modules += [*self.head.modules()]
+        _init_modules(modules)
+
+
 def _optional_import_self_attention_block():
     try:
         from dinov3.layers.block import SelfAttentionBlock  # type: ignore

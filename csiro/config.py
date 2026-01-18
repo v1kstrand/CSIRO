@@ -45,7 +45,7 @@ def neck_num_heads_for(backbone_size: str) -> int:
     raise ValueError(f"Unknown backbone_size: {backbone_size}")
     
 DEFAULTS: dict[str, Any] = dict(
-    cv_params=dict(mode="gkf", cv_seed=0, n_splits=5, max_folds=None),
+    cv_cfg=1,
     cv_resume=True,
     max_folds=None,
     device="cuda",  # [cuda, cpu]
@@ -61,7 +61,7 @@ DEFAULTS: dict[str, Any] = dict(
     lr_final=1e-7,
     early_stopping=10,
     backbone_size="b",  # [b, l]
-    model_name="tiled_base",  # [tiled_base, tiled_sum3, tiled_stitch]
+    model_name="tiled_base",  # [tiled_base, tiled_sum3, tiled_stitch, rect_full]
     head_style="single",  # [single, multi]
     out_format="cat_cls",  # [mean, cat_cls, cat_cls_w_mean]
     pred_space="log",  # [log, gram]

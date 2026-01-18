@@ -6,7 +6,7 @@ import glob
 
 import torch
 from torch.utils.data import DataLoader, Subset
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 from tqdm.auto import tqdm
 
 from .amp import autocast_context
@@ -18,7 +18,12 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
-from .model import TiledDINOv3Regressor, TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3
+from .model import (
+    TiledDINOv3Regressor,
+    TiledDINOv3Regressor3,
+    TiledDINOv3RegressorStitched3,
+    FullDINOv3RegressorRect3,
+)
 from .transforms import post_tfms
 
 def _normalize_pred_space(pred_space: str) -> str:
@@ -65,6 +70,8 @@ def _postprocess_mass_balance(pred: torch.Tensor) -> torch.Tensor:
 def _resolve_model_class(model_name: str | None, tiled_inp: bool) -> type[torch.nn.Module]:
     name = str(model_name or "").strip().lower()
     if not tiled_inp:
+        if name in ("rect_full", "full_rect", "rect"):
+            return FullDINOv3RegressorRect3
         raise ValueError("Non-tiled models are no longer supported. Set tiled_inp=True.")
     if not name or name in ("tiled_base", "tiled"):
         return TiledDINOv3Regressor
@@ -219,9 +226,9 @@ def _build_model_from_state(
         backbone_dtype=backbone_dtype,
         pred_space=pred_space,
     )
-    if model_cls in (TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3):
+    if model_cls in (TiledDINOv3Regressor3, TiledDINOv3RegressorStitched3, FullDINOv3RegressorRect3):
         model_kwargs["head_style"] = head_style
-        if model_cls is TiledDINOv3RegressorStitched3:
+        if model_cls in (TiledDINOv3RegressorStitched3, FullDINOv3RegressorRect3):
             out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
             model_kwargs["out_format"] = out_format
             model_kwargs["neck_rope"] = bool(state.get("neck_rope", DEFAULTS.get("neck_rope", True)))
@@ -568,20 +575,19 @@ def _wr2_from_stats(stats: dict[str, torch.Tensor]) -> float:
     return (1.0 - stats["ss_res"] / (ss_tot + 1e-12)).item()
 
 
-def _make_cv_iter(wide_df, cv_params: dict[str, Any] | None) -> list[tuple[Any, Any]]:
-    if cv_params is None:
-        cv_params = DEFAULTS.get("cv_params", {})
-    if not isinstance(cv_params, dict):
-        raise ValueError("cv_params must be a dict.")
-    mode = str(cv_params.get("mode", "gkf")).lower()
-    if mode != "gkf":
-        raise ValueError(f"Unsupported cv mode: {mode}")
-    if "cv_seed" not in cv_params:
-        raise ValueError("cv_params must include 'cv_seed'.")
-    n_splits = int(cv_params.get("n_splits", DEFAULTS["cv_params"]["n_splits"]))
+def _make_cv_iter(wide_df, cv_cfg: int | None) -> list[tuple[Any, Any]]:
+    if cv_cfg is None:
+        cv_cfg = int(DEFAULTS.get("cv_cfg", 1))
+    cv_cfg = int(cv_cfg)
     groups = wide_df["Sampling_Date"].values
-    gkf = GroupKFold(n_splits=int(n_splits), shuffle=True, random_state=int(cv_params["cv_seed"]))
-    return list(gkf.split(wide_df, groups=groups))
+    if cv_cfg == 1:
+        gkf = GroupKFold(n_splits=5, shuffle=True, random_state=126015)
+        return list(gkf.split(wide_df, groups=groups))
+    if cv_cfg == 2:
+        sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=82947501)
+        strat = wide_df["State"].astype(str).values
+        return list(sgkf.split(wide_df, y=strat, groups=groups))
+    raise ValueError(f"Unsupported cv_cfg: {cv_cfg}")
 
 
 def ttt_sweep_cv(
@@ -591,7 +597,7 @@ def ttt_sweep_cv(
     *,
     pt_paths: list[str] | str | None = None,
     states: Any | None = None,
-    cv_params: dict[str, Any] | None = None,
+    cv_cfg: int | None = None,
     sweeps: list[dict[str, Any]] | None = None,
     batch_size: int = 64,
     num_workers: int | None = None,
@@ -625,7 +631,7 @@ def ttt_sweep_cv(
     if isinstance(trainable_dtype, str):
         trainable_dtype = parse_dtype(trainable_dtype)
 
-    cv_iter = _make_cv_iter(wide_df, cv_params)
+    cv_iter = _make_cv_iter(wide_df, cv_cfg)
     w_vec = torch.as_tensor(DEFAULT_LOSS_WEIGHTS, dtype=torch.float32, device=device).view(1, -1)
 
     outer_agg = str(outer_agg).lower()

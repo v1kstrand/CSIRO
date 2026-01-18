@@ -95,14 +95,24 @@ def train_cv(
         kwargs["backbone"] = backbone_cache[cache_key]
         tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
         model_name = str(kwargs.get("model_name", cfg.get("model_name", ""))).strip().lower()
+        full_rect = model_name in ("rect_full", "full_rect", "rect")
+        if full_rect and tiled_inp:
+            raise ValueError("rect_full model requires tiled_inp=False.")
+        if full_rect:
+            tiled_inp = False
         tile_geom_mode = str(kwargs.get("tile_geom_mode", cfg.get("tile_geom_mode", "shared"))).strip().lower()
         if tile_geom_mode not in ("shared", "independent"):
             raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
         use_shared_geom = tiled_inp and tile_geom_mode == "shared"
         img_preprocess = bool(kwargs.get("img_preprocess", cfg.get("img_preprocess", False)))
-        cache_key = "shared" if use_shared_geom else ("tiled" if tiled_inp else "base")
+        cache_key = "full_rect" if full_rect else ("shared" if use_shared_geom else ("tiled" if tiled_inp else "base"))
         if cache_key not in dataset_cache:
-            if use_shared_geom:
+            if full_rect:
+                dataset_cache[cache_key] = BiomassFullCached(
+                    wide_df,
+                    img_preprocess=img_preprocess,
+                )
+            elif use_shared_geom:
                 dataset_cache[cache_key] = BiomassFullCached(
                     wide_df,
                     img_preprocess=img_preprocess,
