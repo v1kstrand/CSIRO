@@ -543,7 +543,7 @@ class FullDINOv3RegressorRect3(nn.Module):
 
         feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():
-            p.requires_grad_(False)
+            p.requires_grad_(self.backbone_grad)
         if drop_path is not None and drop_path["backbone"] > 0.0:
             for i in range(len(self.backbone.blocks)):
                 self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
@@ -654,12 +654,6 @@ class FullDINOv3RegressorRect3(nn.Module):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tokens, rope = _backbone_tokens(self.backbone, x)
 
-        if tokens.size(1) <= int(self.num_regs):
-            raise ValueError(f"Unexpected token length {tokens.size(1)} for num_regs={self.num_regs}.")
-        prefix, patches = tokens[:, : int(self.num_regs), :], tokens[:, int(self.num_regs) :, :]
-        cls = prefix[:, :1, :]
-        regs = prefix[:, 1:, :]
-        tokens = torch.cat([cls, regs, patches], dim=1)
         rope_neck = rope if self.neck_rope else None
         for block in self.neck:
             try:
