@@ -248,6 +248,7 @@ def train_one_fold(
     neck_ffn: bool | None = None,
     top_k_weights: int | None = None,
     last_k_weights: int | None = None,
+    k_weights_val: bool | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -372,6 +373,9 @@ def train_one_fold(
     topk_list: list[tuple[float, dict[str, dict[str, torch.Tensor]]]] = []
     recent_states: list[dict[str, dict[str, torch.Tensor]]] = []
     best_window_states: list[dict[str, dict[str, torch.Tensor]]] = []
+    if k_weights_val is None:
+        k_weights_val = bool(DEFAULTS.get("k_weights_val", False))
+    k_weights_val = bool(k_weights_val)
     recent_states: list[dict[str, dict[str, torch.Tensor]]] = []
     best_window_states: list[dict[str, dict[str, torch.Tensor]]] = []
 
@@ -396,6 +400,8 @@ def train_one_fold(
 
         total_updates = int(max_updates)
         warmup_steps = min(int(warmup_steps), int(total_updates))
+        if int(total_updates) <= int(warmup_steps):
+            raise ValueError("max_updates must be > warmup_steps to run at least one evaluation.")
         update_idx = 0
         running = 0.0
         n_seen = 0
@@ -481,6 +487,8 @@ def train_one_fold(
                 or (int(update_idx) % int(eval_every) == 0)
                 or (int(update_idx) == int(total_updates))
             )
+            if int(update_idx) <= int(warmup_steps):
+                do_eval = False
             score = None
             train_loss = None
             if do_eval:
@@ -488,10 +496,10 @@ def train_one_fold(
                 running = 0.0
                 n_seen = 0
                 model.eval()
-                score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+                score_curr = float(eval_global_wr2(model, dl_va, eval_w, device=device))
                 if top_k > 0:
                     state_k = _save_parts(model)
-                    topk_list.append((float(score), state_k))
+                    topk_list.append((float(score_curr), state_k))
                     topk_list.sort(key=lambda x: float(x[0]), reverse=True)
                     if len(topk_list) > int(top_k):
                         topk_list.pop(-1)
@@ -500,6 +508,18 @@ def train_one_fold(
                     recent_states.append(state_k)
                     if len(recent_states) > int(last_k):
                         recent_states.pop(0)
+                score = score_curr
+                if k_weights_val and (top_k > 0 or last_k > 0):
+                    if top_k > 0 and topk_list:
+                        state_eval = _avg_states([s for _, s in topk_list])
+                    elif last_k > 0 and recent_states:
+                        state_eval = _avg_states(recent_states)
+                    else:
+                        state_eval = _save_parts(model)
+                    orig_state = _save_parts(model)
+                    _load_parts(model, state_eval)
+                    score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+                    _load_parts(model, orig_state)
 
                 if comet_exp is not None and int(update_idx) > int(skip_log_first_n):
                     p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
@@ -539,6 +559,8 @@ def train_one_fold(
 
         for ep in p_bar:
             warmup_epochs = min(int(warmup_steps), int(epochs))
+            if int(epochs) <= int(warmup_epochs):
+                raise ValueError("epochs must be > warmup_steps to run at least one evaluation.")
             if warmup_epochs > 0 and int(ep) <= int(warmup_epochs):
                 lr = float(lr_start) * (float(ep) / float(warmup_epochs))
             else:
@@ -602,13 +624,15 @@ def train_one_fold(
 
             train_loss = running / max(int(n_seen), 1)
             do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
+            if int(ep) <= int(warmup_epochs):
+                do_eval = False
             score = None
             if do_eval:
                 model.eval()
-                score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+                score_curr = float(eval_global_wr2(model, dl_va, eval_w, device=device))
                 if top_k > 0:
                     state_k = _save_parts(model)
-                    topk_list.append((float(score), state_k))
+                    topk_list.append((float(score_curr), state_k))
                     topk_list.sort(key=lambda x: float(x[0]), reverse=True)
                     if len(topk_list) > int(top_k):
                         topk_list.pop(-1)
@@ -617,6 +641,18 @@ def train_one_fold(
                     recent_states.append(state_k)
                     if len(recent_states) > int(last_k):
                         recent_states.pop(0)
+                score = score_curr
+                if k_weights_val and (top_k > 0 or last_k > 0):
+                    if top_k > 0 and topk_list:
+                        state_eval = _avg_states([s for _, s in topk_list])
+                    elif last_k > 0 and recent_states:
+                        state_eval = _avg_states(recent_states)
+                    else:
+                        state_eval = _save_parts(model)
+                    orig_state = _save_parts(model)
+                    _load_parts(model, state_eval)
+                    score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+                    _load_parts(model, orig_state)
 
             if comet_exp is not None and int(ep) > int(skip_log_first_n):
                 p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
@@ -663,6 +699,8 @@ def train_one_fold(
         final_state = _avg_states([s for _, s in topk_list])
     elif last_k > 0 and best_window_states:
         final_state = _avg_states(best_window_states)
+        if isinstance(final_state, dict):
+            final_state["last_k_states"] = best_window_states
     if save_path and final_state is not None:
         torch.save(final_state, save_path)
     if return_state:
@@ -868,6 +906,10 @@ def run_groupkfold_cv(
     if save_output_dir is not None:
         cv_state_path = os.path.join(save_output_dir, f"{config_name}_cv_state.pt")
 
+    val_min_score = float(train_kwargs.get("val_min_score", DEFAULTS.get("val_min_score", 0.0)))
+    val_num_retry = int(train_kwargs.get("val_num_retry", DEFAULTS.get("val_num_retry", 1)))
+    val_num_retry = max(1, int(val_num_retry))
+
     fold_scores: list[float] = []
     fold_model_scores: list[list[float]] = []
     fold_states: list[list[dict[str, Any]]] = []
@@ -1001,6 +1043,40 @@ def run_groupkfold_cv(
                 )
                 if isinstance(result, float) and math.isnan(result):
                     return
+                best_attempt = None
+                best_attempt_score = -1e9
+                attempts = 0
+                while attempts < int(val_num_retry):
+                    if attempts > 0:
+                        result = train_one_fold(
+                            ds_tr_view=ds_tr_view,
+                            ds_va_view=ds_va_view,
+                            tr_idx=tr_idx,
+                            va_idx=va_idx,
+                            fold_idx=int(fold_idx),
+                            comet_exp=comet_exp,
+                            curr_fold=int(fold_idx),
+                            model_idx=int(model_idx),
+                            return_state=True,
+                            **inp_train_kwargs,
+                        )
+                        if isinstance(result, float) and math.isnan(result):
+                            return
+                    attempts += 1
+                    score = float(result["score"])
+                    if math.isnan(score):
+                        return
+                    if score > best_attempt_score:
+                        best_attempt = result
+                        best_attempt_score = score
+                    if score >= float(val_min_score):
+                        break
+                if best_attempt is None:
+                    return
+                result = best_attempt
+                result["val_failed"] = bool(float(result["score"]) < float(val_min_score))
+                result["val_attempts"] = int(attempts)
+                result["val_min_score"] = float(val_min_score)
 
                 model_scores.append(float(result["score"]))
                 best_parts = result.get("best_state", result["state"])
@@ -1035,6 +1111,9 @@ def run_groupkfold_cv(
                         img_size=None if img_size is None else int(img_size),
                         score=float(result["score"]),
                         best_score=float(result["best_score"]),
+                        val_failed=bool(result.get("val_failed", False)),
+                        val_attempts=int(result.get("val_attempts", 1)),
+                        val_min_score=float(result.get("val_min_score", val_min_score)),
                     )
                 )
                 model_states_best.append(
@@ -1068,6 +1147,9 @@ def run_groupkfold_cv(
                         img_size=None if img_size is None else int(img_size),
                         score=float(result["score"]),
                         best_score=float(result["best_score"]),
+                        val_failed=bool(result.get("val_failed", False)),
+                        val_attempts=int(result.get("val_attempts", 1)),
+                        val_min_score=float(result.get("val_min_score", val_min_score)),
                     )
                 )
                 if int(fold_idx) < len(fold_states):
