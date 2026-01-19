@@ -534,7 +534,8 @@ def train_one_fold(
                     if last_k > 0 and recent_states:
                         best_window_states = list(recent_states)
                 else:
-                    patience += 1
+                    if int(update_idx) > int(warmup_steps):
+                        patience += 1
 
                 s1 = (
                     f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | "
@@ -668,7 +669,8 @@ def train_one_fold(
                 if last_k > 0 and recent_states:
                     best_window_states = list(recent_states)
             else:
-                patience += 1
+                if int(ep) > int(warmup_epochs):
+                    patience += 1
 
             s1 = f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | lr: {lr:6.4f}"
             if score is None:
