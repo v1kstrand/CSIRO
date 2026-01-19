@@ -247,6 +247,7 @@ def train_one_fold(
     drop_path: dict[str, float] | None = None,
     neck_ffn: bool | None = None,
     top_k_weights: int | None = None,
+    last_k_weights: int | None = None,
 ) -> float | dict[str, Any]:
     tr_subset = Subset(ds_tr_view, tr_idx)
     va_subset = Subset(ds_va_view, va_idx)
@@ -363,7 +364,16 @@ def train_one_fold(
     if top_k_weights is None:
         top_k_weights = int(DEFAULTS.get("top_k_weights", 0))
     top_k = max(0, int(top_k_weights))
+    if last_k_weights is None:
+        last_k_weights = int(DEFAULTS.get("last_k_weights", 0))
+    last_k = max(0, int(last_k_weights))
+    if int(top_k) > 0 and int(last_k) > 0:
+        raise ValueError("top_k_weights and last_k_weights are mutually exclusive; set one to 0.")
     topk_list: list[tuple[float, dict[str, dict[str, torch.Tensor]]]] = []
+    recent_states: list[dict[str, dict[str, torch.Tensor]]] = []
+    best_window_states: list[dict[str, dict[str, torch.Tensor]]] = []
+    recent_states: list[dict[str, dict[str, torch.Tensor]]] = []
+    best_window_states: list[dict[str, dict[str, torch.Tensor]]] = []
 
     if max_updates is None:
         max_updates = int(DEFAULTS.get("max_updates", 0))
@@ -485,6 +495,11 @@ def train_one_fold(
                     topk_list.sort(key=lambda x: float(x[0]), reverse=True)
                     if len(topk_list) > int(top_k):
                         topk_list.pop(-1)
+                if last_k > 0:
+                    state_k = _save_parts(model)
+                    recent_states.append(state_k)
+                    if len(recent_states) > int(last_k):
+                        recent_states.pop(0)
 
                 if comet_exp is not None and int(update_idx) > int(skip_log_first_n):
                     p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
@@ -496,6 +511,8 @@ def train_one_fold(
                     patience = 0
                     best_state = _save_parts(model)
                     best_opt_state = copy.deepcopy(opt.state_dict())
+                    if last_k > 0 and recent_states:
+                        best_window_states = list(recent_states)
                 else:
                     patience += 1
 
@@ -595,6 +612,11 @@ def train_one_fold(
                     topk_list.sort(key=lambda x: float(x[0]), reverse=True)
                     if len(topk_list) > int(top_k):
                         topk_list.pop(-1)
+                if last_k > 0:
+                    state_k = _save_parts(model)
+                    recent_states.append(state_k)
+                    if len(recent_states) > int(last_k):
+                        recent_states.pop(0)
 
             if comet_exp is not None and int(ep) > int(skip_log_first_n):
                 p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
@@ -607,6 +629,8 @@ def train_one_fold(
                 patience = 0
                 best_state = _save_parts(model)
                 best_opt_state = copy.deepcopy(opt.state_dict())
+                if last_k > 0 and recent_states:
+                    best_window_states = list(recent_states)
             else:
                 patience += 1
 
@@ -637,6 +661,8 @@ def train_one_fold(
     final_state = best_state
     if top_k > 0 and topk_list:
         final_state = _avg_states([s for _, s in topk_list])
+    elif last_k > 0 and best_window_states:
+        final_state = _avg_states(best_window_states)
     if save_path and final_state is not None:
         torch.save(final_state, save_path)
     if return_state:
