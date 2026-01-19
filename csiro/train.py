@@ -312,6 +312,7 @@ def train_one_fold(
     if model_cls is TiledDINOv3Regressor3:
         model_kwargs["head_style"] = head_style
     if model_cls in (TiledDINOv3RegressorStitched3, FullDINOv3RegressorRect3):
+        model_kwargs["head_style"] = head_style
         if out_format is None:
             out_format = DEFAULTS.get("out_format", "cat_cls")
         model_kwargs["out_format"] = str(out_format).strip().lower()
