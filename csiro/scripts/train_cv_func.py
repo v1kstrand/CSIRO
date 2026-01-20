@@ -30,7 +30,6 @@ def train_cv(
     model_size: str | None = None,  # "b" == ViT-Base
     plus: str = "",
     overrides: dict[str, Any] | None = None,
-    sweeps: dict = None
 ) -> Any:
     
     cfg: dict[str, Any] = dict(DEFAULTS)
@@ -48,94 +47,78 @@ def train_cv(
     dataset_cache: dict[str, Any] = {}
     backbone_cache: dict[tuple[str, str, str], Any] = {}
 
-    base_kwargs = dict(cfg)
-    base_kwargs.update(
+    cfg.update(
         dict(
             wide_df=wide_df,
             device=device,
         )
     )
 
-    sweeps = sweeps or [base_kwargs]
-    outputs: list[dict[str, Any]] = []
-    for sweep in sweeps:
-        kwargs = dict(base_kwargs)
-        kwargs.update({k: v for k, v in sweep.items()})
-        if (
-            "backbone_size" in kwargs
-            and "neck_num_heads" not in kwargs
-            and int(kwargs.get("num_neck", 0)) > 0
-        ):
-            kwargs["neck_num_heads"] = neck_num_heads_for(kwargs["backbone_size"])
-        name_src = dict(sweep)
-        name_src.pop("cv_resume", None)
-        kwargs["config_name"] = "".join(c for c in str(name_src) if c.isalnum() or c in "_-")[:80]
+    if (
+        "backbone_size" in cfg
+        and "neck_num_heads" not in cfg
+        and int(cfg.get("num_neck", 0)) > 0
+    ):
+        cfg["neck_num_heads"] = neck_num_heads_for(cfg["backbone_size"])
+    cfg["config_name"] = str(cfg.get("run_name", "")).strip()
 
-        sweep_model_size = str(
-            kwargs.get("backbone_size", model_size or cfg.get("backbone_size", "b"))
+    sweep_model_size = str(
+        cfg.get("backbone_size", model_size or cfg.get("backbone_size", "b"))
+    )
+    sweep_dino_weights = dino_weights
+    if sweep_dino_weights is None:
+        sweep_dino_weights = dino_weights_path_from_size(
+            str(cfg.get("backbone_size", "b"))
         )
-        sweep_dino_weights = dino_weights
-        if sweep_dino_weights is None:
-            sweep_dino_weights = dino_weights_path_from_size(
-                str(kwargs.get("backbone_size", "b"))
-            )
-        if sweep_dino_weights is None:
-            raise ValueError("Set DINO_B_WEIGHTS_PATH or DINO_L_WEIGHTS_PATH for the chosen backbone_size.")
+    if sweep_dino_weights is None:
+        raise ValueError("Set DINO_B_WEIGHTS_PATH or DINO_L_WEIGHTS_PATH for the chosen backbone_size.")
 
-        cache_key = (str(sweep_model_size), str(sweep_dino_weights), str(plus))
-        if cache_key not in backbone_cache:
-            print("INFO: model_size:", sweep_model_size)
-            backbone_cache[cache_key] = torch.hub.load(
-                str(dino_repo),
-                dino_hub_name(model_size=str(sweep_model_size), plus=str(plus)),
-                source="local",
-                weights=str(sweep_dino_weights),
-            )
+    cache_key = (str(sweep_model_size), str(sweep_dino_weights), str(plus))
+    if cache_key not in backbone_cache:
+        print("INFO: model_size:", sweep_model_size)
+        backbone_cache[cache_key] = torch.hub.load(
+            str(dino_repo),
+            dino_hub_name(model_size=str(sweep_model_size), plus=str(plus)),
+            source="local",
+            weights=str(sweep_dino_weights),
+        )
 
-        kwargs["backbone"] = backbone_cache[cache_key]
-        tiled_inp = bool(kwargs.get("tiled_inp", cfg.get("tiled_inp", False)))
-        model_name = str(kwargs.get("model_name", cfg.get("model_name", ""))).strip().lower()
-        full_rect = model_name in ("rect_full", "full_rect", "rect")
-        if full_rect and tiled_inp:
-            raise ValueError("rect_full model requires tiled_inp=False.")
+    cfg["backbone"] = backbone_cache[cache_key]
+    tiled_inp = bool(cfg.get("tiled_inp", cfg.get("tiled_inp", False)))
+    model_name = str(cfg.get("model_name", cfg.get("model_name", ""))).strip().lower()
+    full_rect = model_name in ("rect_full", "full_rect", "rect")
+    if full_rect and tiled_inp:
+        raise ValueError("rect_full model requires tiled_inp=False.")
+    if full_rect:
+        tiled_inp = False
+    tile_geom_mode = str(cfg.get("tile_geom_mode", cfg.get("tile_geom_mode", "shared"))).strip().lower()
+    if tile_geom_mode not in ("shared", "independent"):
+        raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
+    use_shared_geom = tiled_inp and tile_geom_mode == "shared"
+    img_preprocess = bool(cfg.get("img_preprocess", cfg.get("img_preprocess", False)))
+    cache_key = "full_rect" if full_rect else ("shared" if use_shared_geom else ("tiled" if tiled_inp else "base"))
+    if cache_key not in dataset_cache:
         if full_rect:
-            tiled_inp = False
-        tile_geom_mode = str(kwargs.get("tile_geom_mode", cfg.get("tile_geom_mode", "shared"))).strip().lower()
-        if tile_geom_mode not in ("shared", "independent"):
-            raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
-        use_shared_geom = tiled_inp and tile_geom_mode == "shared"
-        img_preprocess = bool(kwargs.get("img_preprocess", cfg.get("img_preprocess", False)))
-        cache_key = "full_rect" if full_rect else ("shared" if use_shared_geom else ("tiled" if tiled_inp else "base"))
-        if cache_key not in dataset_cache:
-            if full_rect:
-                dataset_cache[cache_key] = BiomassFullCached(
-                    wide_df,
-                    img_preprocess=img_preprocess,
-                )
-            elif use_shared_geom:
-                dataset_cache[cache_key] = BiomassFullCached(
-                    wide_df,
-                    img_preprocess=img_preprocess,
-                )
-            elif tiled_inp:
-                dataset_cache[cache_key] = BiomassTiledCached(
-                    wide_df,
-                    img_size=int(cfg["img_size"]),
-                    img_preprocess=img_preprocess,
-                )
-            else:
-                dataset_cache[cache_key] = BiomassBaseCached(
-                    wide_df,
-                    img_size=int(cfg["img_size"]),
-                    img_preprocess=img_preprocess,
-                )
-        kwargs["dataset"] = dataset_cache[cache_key]
-        result = run_groupkfold_cv(return_details=True, **kwargs)
-        outputs.append(
-            dict(
-                config_name=kwargs["config_name"],
-                result=result,
+            dataset_cache[cache_key] = BiomassFullCached(
+                wide_df,
+                img_preprocess=img_preprocess,
             )
-        )
-
-    return outputs
+        elif use_shared_geom:
+            dataset_cache[cache_key] = BiomassFullCached(
+                wide_df,
+                img_preprocess=img_preprocess,
+            )
+        elif tiled_inp:
+            dataset_cache[cache_key] = BiomassTiledCached(
+                wide_df,
+                img_size=int(cfg["img_size"]),
+                img_preprocess=img_preprocess,
+            )
+        else:
+            dataset_cache[cache_key] = BiomassBaseCached(
+                wide_df,
+                img_size=int(cfg["img_size"]),
+                img_preprocess=img_preprocess,
+            )
+    cfg["dataset"] = dataset_cache[cache_key]
+    return run_groupkfold_cv(return_details=True, **cfg)
