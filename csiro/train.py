@@ -981,8 +981,8 @@ def run_groupkfold_cv(
                         break
                     if comet_exp is not None:
                         p = {
-                            f"x_val_retry_cv{curr_fold}_m{model_idx}": int(attempts),
-                            f"x_val_retry_max_cv{curr_fold}_m{model_idx}": int(val_num_retry),
+                            f"x_val_retry_cv{fold_idx}_m{model_idx}": int(attempts),
+                            f"x_val_retry_max_cv{fold_idx}_m{model_idx}": int(val_num_retry),
                         }
                         comet_exp.log_metrics(p)
                     if verbose:
