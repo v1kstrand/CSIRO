@@ -13,6 +13,7 @@ export DINO_L_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitl16
 set -e
 
 # ---- Paths (edit if you really need to) ----
+SETUPS_DIR="/notebooks/setups"
 VENV_DIR="/notebooks/venvs/pt27cu118"
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
@@ -33,15 +34,15 @@ echo "Done. Activate with:  source \"$VENV_DIR/bin/activate\""
 case "${1:-}" in
   cfg)
     i="${2:?Usage: $0 cfg <i>}"
-    python "cfg${i}.py"
+    python "$SETUPS_DIR/cfg${i}.py"
     ;;
   run)
     cfg="${2:?Usage: $0 run <config>}"
-    python run_config.py "$cfg"
+    python "$SETUPS_DIR/run_config.py" "$cfg"
     ;;
   vit)
     python -c "import timm" >/dev/null 2>&1 || python -m pip install -U timm
-    python train_vit.py
+    python "$SETUPS_DIR/train_vit.py"
     ;;
   *)
     echo "Usage:"

@@ -37,3 +37,5 @@ val_min_score: 0.75
 val_num_retry: 3
 last_k_weights: 4
 neck_pool: true
+k_weights_val: true
+run_name: neck_poolTruek_weights_valTrue

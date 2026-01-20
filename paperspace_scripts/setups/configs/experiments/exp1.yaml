@@ -38,3 +38,4 @@ val_num_retry: 3
 last_k_weights: 4
 neck_pool: false
 k_weights_val: false
+run_name: neck_poolFalse
