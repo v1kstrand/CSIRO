@@ -971,6 +971,9 @@ def run_groupkfold_cv(
     tile_geom_mode = str(train_kwargs.pop("tile_geom_mode", DEFAULTS.get("tile_geom_mode", "shared"))).strip().lower()
     if tile_geom_mode not in ("shared", "independent"):
         raise ValueError(f"tile_geom_mode must be 'shared' or 'independent' (got {tile_geom_mode})")
+    run_name = str(train_kwargs.get("run_name", DEFAULTS.get("run_name", ""))).strip()
+    if not run_name:
+        raise ValueError("run_name must be set (used for artifact naming).")
     model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
     full_rect = str(model_name).strip().lower() in ("rect_full", "full_rect", "rect")
     if full_rect and tiled_inp:
@@ -1016,11 +1019,9 @@ def run_groupkfold_cv(
         ds_va_view = TransformView(dataset, post_tfms())
 
     model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
-    safe_name = "".join(c for c in str(model_name).strip() if c.isalnum() or c in "_-")
+    safe_name = "".join(c for c in str(run_name).strip() if c.isalnum() or c in "_-")
     if not safe_name:
-        safe_name = "".join(c for c in str(config_name).strip() if c.isalnum() or c in "_-")
-    if not safe_name:
-        safe_name = "run"
+        raise ValueError("run_name must contain at least one alnum/_/- character.")
     cv_state_path = None
     save_output_path = None
     if save_output_dir is not None:
@@ -1193,6 +1194,16 @@ def run_groupkfold_cv(
                         best_attempt_score = score
                     if score >= float(val_min_score):
                         break
+                    if comet_exp is not None:
+                        p = {
+                            f"x_val_retry_cv{curr_fold}_m{model_idx}": int(attempts),
+                            f"x_val_retry_max_cv{curr_fold}_m{model_idx}": int(val_num_retry),
+                        }
+                        comet_exp.log_metrics(p)
+                    if verbose:
+                        tqdm.write(
+                            f"[fold {fold_idx} | model {int(model_idx)}] retry {int(attempts)}/{int(val_num_retry)}"
+                        )
                 if best_attempt is None:
                     return
                 result = best_attempt
