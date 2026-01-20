@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 
+
+export PYTHONPATH="/notebooks/CSIRO:${PYTHONPATH:-}"
+set -e
+
+# ---- Paths (edit if you really need to) ----
+SETUPS_DIR="/notebooks/setups"
+VENV_DIR="/notebooks/venvs/pt27cu118"
+python3 -m venv "$VENV_DIR"
+source "$VENV_DIR/bin/activate"
+
 export COMET_DISABLE_AUTO_LOGGING=1
 #export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 export TORCHINDUCTOR_AUTOGRAD_CACHE=1
@@ -8,16 +18,6 @@ export TRITON_PRINT_AUTOTUNING=1
 export DEFAULT_DATA_ROOT="/notebooks/kaggle/csiro"
 export DINO_B_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
 export DINO_L_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
-export PYTHONPATH="/notebooks/CSIRO:${PYTHONPATH:-}"
-
-
-set -e
-
-# ---- Paths (edit if you really need to) ----
-SETUPS_DIR="/notebooks/setups"
-VENV_DIR="/notebooks/venvs/pt27cu118"
-python3 -m venv "$VENV_DIR"
-source "$VENV_DIR/bin/activate"
 
 
 # 4) Jupyter kernel + handy libs

@@ -10,6 +10,9 @@ from schedule_utils import deep_merge, dump_yaml, load_yaml, resolve_path
 
 DEFAULT_SCHEDULE = Path(__file__).with_name("schedule.yaml")
 
+def _log(message: str) -> None:
+    print(f"[scheduler] {message}", file=sys.stderr)
+
 
 def _load_schedule(path: Path) -> dict:
     schedule = load_yaml(path)
@@ -112,13 +115,15 @@ def _move_config_to_completed(schedule: dict, config_id: str) -> None:
 def _cleanup_ongoing(schedule: dict, state: dict) -> None:
     output_dir = schedule["output_dir"]
     ongoing = []
+    dropped = 0
     for config_id in list(state.get("ongoing", [])):
         try:
             cfg = _load_config(schedule, config_id)
             run_name = _resolve_run_name(cfg, config_id)
         except Exception as exc:
-            print(f"[scheduler] skip {config_id}: {exc}", file=sys.stderr)
+            _log(f"skip {config_id}: {exc}")
             state.setdefault("skipped", []).append(config_id)
+            dropped += 1
             continue
         paths = _model_paths(output_dir, run_name)
         if paths["final"].exists():
@@ -129,12 +134,16 @@ def _cleanup_ongoing(schedule: dict, state: dict) -> None:
             if config_id not in state["completed"]:
                 state["completed"].append(config_id)
             _move_config_to_completed(schedule, config_id)
+            dropped += 1
             continue
         if not paths["checkpoint"].exists() and not paths["cv_state"].exists():
             state.setdefault("skipped", []).append(config_id)
+            dropped += 1
             continue
         ongoing.append(config_id)
     state["ongoing"] = ongoing
+    if dropped:
+        _log(f"pruned {dropped} ongoing entries")
 
 
 def _select_next(schedule: dict, state: dict) -> list[str]:
@@ -146,6 +155,7 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
         schedule["queue"] = _scan_experiments(schedule["experiments_dir"])
         state["queue_index"] = 0
         queue = schedule["queue"]
+        _log(f"auto-queued {len(queue)} configs from {schedule['experiments_dir']}")
 
     if state["ongoing"]:
         return list(state["ongoing"])[:max_runs]
@@ -159,7 +169,7 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
             cfg = _load_config(schedule, config_id)
             run_name = _resolve_run_name(cfg, config_id)
         except Exception as exc:
-            print(f"[scheduler] skip {config_id}: {exc}", file=sys.stderr)
+            _log(f"skip {config_id}: {exc}")
             state.setdefault("skipped", []).append(config_id)
             continue
         paths = _model_paths(output_dir, run_name)
@@ -186,8 +196,23 @@ def main() -> int:
     if args.max_runs is not None:
         schedule["max_runs"] = int(args.max_runs)
     state = _load_state(schedule["state_path"])
+    queue_len = len(schedule["queue"]) if schedule["queue"] is not None else None
+    _log(
+        "loaded schedule: "
+        f"queue_len={queue_len} "
+        f"max_runs={schedule['max_runs']} "
+        f"state={schedule['state_path']}"
+    )
+    _log(
+        "state: "
+        f"ongoing={len(state['ongoing'])} "
+        f"completed={len(state['completed'])} "
+        f"skipped={len(state['skipped'])} "
+        f"queue_index={state.get('queue_index', 0)}"
+    )
     _cleanup_ongoing(schedule, state)
     selected = _select_next(schedule, state)
+    _log(f"selected={selected}")
     _save_state(schedule["state_path"], state)
     print(json.dumps(selected))
     return 0
