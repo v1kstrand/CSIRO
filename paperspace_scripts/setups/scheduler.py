@@ -65,15 +65,10 @@ def _load_config(schedule: dict, config_id: str) -> dict:
 def _resolve_run_name(config: dict, config_id: str) -> str:
     run_name = str(config.get("run_name", "")).strip()
     model_name = str(config.get("model_name", "")).strip()
-    if run_name and model_name and run_name != model_name:
-        raise ValueError(
-            f"run_name and model_name must match for {config_id}; "
-            "use run_name only to avoid mismatched artifacts."
-        )
     if not run_name:
         run_name = model_name
     if not run_name:
-        raise ValueError(f"run_name is required for {config_id}.")
+        raise ValueError(f"run_name is required for {config_id} (or set model_name for legacy configs).")
     return run_name
 
 
