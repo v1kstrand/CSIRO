@@ -206,8 +206,6 @@ def train_one_fold(
     wd: float = 1e-4,
     fold_idx: int = 0,
     epochs: int = 5,
-    max_updates: int | None = None,
-    samples_per_update: int | None = None,
     warmup_steps: int | None = None,
     lr_start: float = 3e-4,
     lr_final: float = 5e-5,
@@ -232,7 +230,6 @@ def train_one_fold(
     return_state: bool = False,
     tiled_inp: bool = False,
     val_freq: int = 1,
-    eval_every: int | None = None,
     backbone_size: str | None = None,
     mixup: tuple[float, float] | dict[str, float] | None = None,
     model_name: str | None = None,
@@ -411,398 +408,186 @@ def train_one_fold(
     recent_states: list[dict[str, dict[str, torch.Tensor]]] = []
     best_window_states: list[dict[str, dict[str, torch.Tensor]]] = []
 
-    if max_updates is None:
-        max_updates = int(DEFAULTS.get("max_updates", 0))
-    max_updates = int(max_updates)
-    if samples_per_update is None:
-        samples_per_update = int(DEFAULTS.get("samples_per_update", 0))
-    samples_per_update = int(samples_per_update)
-    if eval_every is None:
-        eval_every = int(DEFAULTS.get("eval_every", 1))
-    eval_every = max(1, int(eval_every))
     if warmup_steps is None:
         warmup_steps = int(DEFAULTS.get("warmup_steps", 0))
     warmup_steps = max(0, int(warmup_steps))
-    use_step_mode = int(max_updates) > 0
 
-    if use_step_mode:
-        accum_steps = 1
-        if samples_per_update > 0:
-            accum_steps = max(1, int(math.ceil(samples_per_update / max(int(train_bs), 1))))
+    val_freq = max(1, int(val_freq))
+    p_bar = tqdm(range(1, int(epochs) + 1))
 
-        total_updates = int(max_updates)
-        warmup_steps = min(int(warmup_steps), int(total_updates))
-        if int(total_updates) <= int(warmup_steps):
-            raise ValueError("max_updates must be > warmup_steps to run at least one evaluation.")
-        update_idx = 0
+    for ep in p_bar:
+        warmup_epochs = min(int(warmup_steps), int(epochs))
+        if int(epochs) <= int(warmup_epochs):
+            raise ValueError("epochs must be > warmup_steps to run at least one evaluation.")
+        if warmup_epochs > 0 and int(ep) <= int(warmup_epochs):
+            lr = float(lr_start) * (float(ep) / float(warmup_epochs))
+        else:
+            cosine_epochs = max(int(epochs) - int(warmup_epochs), 1)
+            cosine_step = int(ep) - int(warmup_epochs)
+            lr = cos_sin_lr(int(cosine_step) + 1, int(cosine_epochs), float(lr_start), float(lr_final))
+        set_optimizer_lr(opt, lr)
+
+        model.train()
         running = 0.0
         running_patch = 0.0
         n_seen = 0
-        data_iter = iter(dl_tr)
-        p_bar = tqdm(total=int(total_updates))
 
-        while update_idx < total_updates:
-            curr_update = int(update_idx) + 1
-            if int(warmup_steps) > 0 and int(curr_update) <= int(warmup_steps):
-                lr = float(lr_start) * (float(curr_update) / float(warmup_steps))
-            else:
-                cosine_updates = max(int(total_updates) - int(warmup_steps), 1)
-                cosine_step = int(curr_update) - int(warmup_steps)
-                lr = cos_sin_lr(int(cosine_step), int(cosine_updates), float(lr_start), float(lr_final))
-            set_optimizer_lr(opt, lr)
+        for bi, (x, y_log) in enumerate(dl_tr):
+            x = x.to(device, non_blocking=True)
+            y_log = y_log.to(device, non_blocking=True)
+            y_target = y_log
+            if pred_space == "gram":
+                y_target = torch.expm1(y_log.float())
+            if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
+                if torch.rand((), device=x.device).item() < mixup_p:
+                    bs = int(x.size(0))
+                    use_k3 = mixup_p3 > 0.0 and bs > 2 and torch.rand((), device=x.device).item() < mixup_p3
+                    if use_k3:
+                        perm1 = torch.randperm(bs, device=x.device)
+                        perm2 = torch.randperm(bs, device=x.device)
+                        x2 = x[perm1]
+                        x3 = x[perm2]
+                        weights = torch.distributions.Dirichlet(
+                            torch.full((3,), float(mixup_alpha), device=x.device)
+                        ).sample((bs,))
+                        w1, w2, w3 = weights[:, 0], weights[:, 1], weights[:, 2]
+                        w_shape = [bs] + [1] * (x.ndim - 1)
+                        x = x * w1.view(w_shape) + x2 * w2.view(w_shape) + x3 * w3.view(w_shape)
 
-            model.train()
-            opt.zero_grad(set_to_none=True)
-
-            for _ in range(int(accum_steps)):
-                try:
-                    x, y_log = next(data_iter)
-                except StopIteration:
-                    data_iter = iter(dl_tr)
-                    x, y_log = next(data_iter)
-
-                x = x.to(device, non_blocking=True)
-                y_log = y_log.to(device, non_blocking=True)
-                y_target = y_log
-                if pred_space == "gram":
-                    y_target = torch.expm1(y_log.float())
-                if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
-                    if torch.rand((), device=x.device).item() < mixup_p:
-                        bs = int(x.size(0))
-                        use_k3 = mixup_p3 > 0.0 and bs > 2 and torch.rand((), device=x.device).item() < mixup_p3
-                        if use_k3:
-                            perm1 = torch.randperm(bs, device=x.device)
-                            perm2 = torch.randperm(bs, device=x.device)
-                            x2 = x[perm1]
-                            x3 = x[perm2]
-                            weights = torch.distributions.Dirichlet(
-                                torch.full((3,), float(mixup_alpha), device=x.device)
-                            ).sample((bs,))
-                            w1, w2, w3 = weights[:, 0], weights[:, 1], weights[:, 2]
-                            w_shape = [bs] + [1] * (x.ndim - 1)
-                            x = x * w1.view(w_shape) + x2 * w2.view(w_shape) + x3 * w3.view(w_shape)
-
-                            w_y = weights.view(bs, 3)
-                            if pred_space == "log":
-                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                                y2_lin = torch.expm1(y_log[perm1].float()).clamp_min(0.0)
-                                y3_lin = torch.expm1(y_log[perm2].float()).clamp_min(0.0)
-                                y_mix = y_lin * w_y[:, [0]] + y2_lin * w_y[:, [1]] + y3_lin * w_y[:, [2]]
-                                y_target = torch.log1p(y_mix)
-                            else:
-                                y2 = y_target[perm1]
-                                y3 = y_target[perm2]
-                                y_target = y_target * w_y[:, [0]] + y2 * w_y[:, [1]] + y3 * w_y[:, [2]]
+                        w_y = weights.view(bs, 3)
+                        if pred_space == "log":
+                            y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                            y2_lin = torch.expm1(y_log[perm1].float()).clamp_min(0.0)
+                            y3_lin = torch.expm1(y_log[perm2].float()).clamp_min(0.0)
+                            y_mix = y_lin * w_y[:, [0]] + y2_lin * w_y[:, [1]] + y3_lin * w_y[:, [2]]
+                            y_target = torch.log1p(y_mix)
                         else:
-                            perm = torch.randperm(bs, device=x.device)
-                            x2 = x[perm]
-                            y2 = y_target[perm]
-                            lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((bs,)).to(x.device)
-                            lam_x = lam.view([bs] + [1] * (x.ndim - 1))
-                            x = x * lam_x + x2 * (1.0 - lam_x)
-
-                            lam_y = lam.view(bs, 1)
-                            if pred_space == "log":
-                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                                y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
-                                y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
-                                y_target = torch.log1p(y_mix)
-                            else:
-                                y_target = y_target * lam_y + y2 * (1.0 - lam_y)
-
-                with autocast_context(device, dtype=trainable_dtype):
-                    if use_patch_aux:
-                        pred, patch_pred = model.forward_with_patch(x)
-                        loss_main = criterion(pred, y_target)
-                        loss_patch = criterion(patch_pred, y_target)
+                            y2 = y_target[perm1]
+                            y3 = y_target[perm2]
+                            y_target = y_target * w_y[:, [0]] + y2 * w_y[:, [1]] + y3 * w_y[:, [2]]
                     else:
-                        pred = model(x)
-                        loss_main = criterion(pred, y_target)
-                    loss = loss_main
-                    if use_patch_aux:
-                        loss = loss + (float(tau_patch) * loss_patch)
-                    if neg_criterion is not None:
-                        loss = loss + neg_criterion(pred)
+                        perm = torch.randperm(bs, device=x.device)
+                        x2 = x[perm]
+                        y2 = y_target[perm]
+                        lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((bs,)).to(x.device)
+                        lam_x = lam.view([bs] + [1] * (x.ndim - 1))
+                        x = x * lam_x + x2 * (1.0 - lam_x)
 
-                loss = loss / float(accum_steps)
-                if scaler.is_enabled():
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                        lam_y = lam.view(bs, 1)
+                        if pred_space == "log":
+                            y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                            y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
+                            y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
+                            y_target = torch.log1p(y_mix)
+                        else:
+                            y_target = y_target * lam_y + y2 * (1.0 - lam_y)
 
-                bs = int(x.size(0))
-                running += float(loss_main.detach().item()) * bs
+            opt.zero_grad(set_to_none=True)
+            with autocast_context(device, dtype=trainable_dtype):
                 if use_patch_aux:
-                    running_patch += float(loss_patch.detach().item()) * bs
-                n_seen += bs
+                    pred, patch_pred = model.forward_with_patch(x)
+                    loss_main = criterion(pred, y_target)
+                    loss_patch = criterion(patch_pred, y_target)
+                else:
+                    pred = model(x)
+                    loss_main = criterion(pred, y_target)
+                loss = loss_main
+                if use_patch_aux:
+                    loss = loss + (float(tau_patch) * loss_patch)
+                if neg_criterion is not None:
+                    loss = loss + neg_criterion(pred)
 
             if scaler.is_enabled():
+                scaler.scale(loss).backward()
                 if clip_val and clip_val > 0:
                     scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 scaler.step(opt)
                 scaler.update()
             else:
+                loss.backward()
                 if clip_val and clip_val > 0:
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 opt.step()
 
-            update_idx += 1
-            p_bar.update(1)
+            bs = int(x.size(0))
+            running += float(loss_main.detach().item()) * bs
+            if use_patch_aux:
+                running_patch += float(loss_patch.detach().item()) * bs
+            n_seen += bs
 
-            do_eval = (
-                (eval_every == 1)
-                or (int(update_idx) % int(eval_every) == 0)
-                or (int(update_idx) == int(total_updates))
+        train_loss = running / max(int(n_seen), 1)
+        train_patch = running_patch / max(int(n_seen), 1) if use_patch_aux else None
+        do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
+        if int(ep) <= int(warmup_epochs):
+            do_eval = False
+        score = None
+        if do_eval:
+            model.eval()
+            score_curr = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+            if top_k > 0:
+                state_k = _save_parts(model)
+                topk_list.append((float(score_curr), state_k))
+                topk_list.sort(key=lambda x: float(x[0]), reverse=True)
+                if len(topk_list) > int(top_k):
+                    topk_list.pop(-1)
+            if last_k > 0:
+                state_k = _save_parts(model)
+                recent_states.append(state_k)
+                if len(recent_states) > int(last_k):
+                    recent_states.pop(0)
+            score = score_curr
+            if k_weights_val and (top_k > 0 or last_k > 0):
+                if top_k > 0 and topk_list:
+                    state_eval = _avg_states([s for _, s in topk_list])
+                elif last_k > 0 and recent_states:
+                    state_eval = _avg_states(recent_states)
+                else:
+                    state_eval = _save_parts(model)
+                orig_state = _save_parts(model)
+                _load_parts(model, state_eval)
+                score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
+                _load_parts(model, orig_state)
+
+        if comet_exp is not None and int(ep) > int(skip_log_first_n):
+            p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
+            if train_patch is not None:
+                p[f"x_train_patch_cv{curr_fold}_m{model_idx}"] = float(train_patch)
+            if score is not None:
+                p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
+            comet_exp.log_metrics(p, step=int(ep))
+
+        if score is not None and score > best_score:
+            best_score = float(score)
+            patience = 0
+            best_state = _save_parts(model)
+            best_opt_state = copy.deepcopy(opt.state_dict())
+            if last_k > 0 and recent_states:
+                best_window_states = list(recent_states)
+        else:
+            if int(ep) > int(warmup_epochs):
+                patience += 1
+
+        s1 = f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | lr: {lr:6.4f}"
+        if score is None:
+            s2 = (
+                f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
+                f"val_wR2=skip | {s1}"
             )
-            if int(update_idx) <= int(warmup_steps):
-                do_eval = False
-            score = None
-            train_loss = None
-            if do_eval:
-                train_loss = running / max(int(n_seen), 1)
-                train_patch = running_patch / max(int(n_seen), 1) if use_patch_aux else None
-                running = 0.0
-                running_patch = 0.0
-                n_seen = 0
-                model.eval()
-                score_curr = float(eval_global_wr2(model, dl_va, eval_w, device=device))
-                if top_k > 0:
-                    state_k = _save_parts(model)
-                    topk_list.append((float(score_curr), state_k))
-                    topk_list.sort(key=lambda x: float(x[0]), reverse=True)
-                    if len(topk_list) > int(top_k):
-                        topk_list.pop(-1)
-                if last_k > 0:
-                    state_k = _save_parts(model)
-                    recent_states.append(state_k)
-                    if len(recent_states) > int(last_k):
-                        recent_states.pop(0)
-                score = score_curr
-                if k_weights_val and (top_k > 0 or last_k > 0):
-                    if top_k > 0 and topk_list:
-                        state_eval = _avg_states([s for _, s in topk_list])
-                    elif last_k > 0 and recent_states:
-                        state_eval = _avg_states(recent_states)
-                    else:
-                        state_eval = _save_parts(model)
-                    orig_state = _save_parts(model)
-                    _load_parts(model, state_eval)
-                    score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
-                    _load_parts(model, orig_state)
+        else:
+            s2 = (
+                f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
+                f"val_wR2={score:.4f} | {s1}"
+            )
+        if verbose:
+            print(s2)
+        p_bar.set_postfix_str(s2)
 
-                if comet_exp is not None and int(update_idx) > int(skip_log_first_n):
-                    p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
-                    if train_patch is not None:
-                        p[f"x_train_patch_cv{curr_fold}_m{model_idx}"] = float(train_patch)
-                    p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
-                    comet_exp.log_metrics(p, step=int(update_idx))
+        if patience >= int(early_stopping):
+            p_bar.set_postfix_str(s2 + " | Early stopping")
+            break
 
-                if score > best_score:
-                    best_score = float(score)
-                    patience = 0
-                    best_state = _save_parts(model)
-                    best_opt_state = copy.deepcopy(opt.state_dict())
-                    if last_k > 0 and recent_states:
-                        best_window_states = list(recent_states)
-                else:
-                    if int(update_idx) > int(warmup_steps):
-                        patience += 1
-
-                s1 = (
-                    f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | "
-                    f"lr: {lr:6.4f}"
-                )
-                s2 = (
-                    f"[fold {fold_idx} | model {int(model_idx)}] | update={int(update_idx)}/{int(total_updates)} | "
-                    f"train_loss={float(train_loss):.4f} | val_wR2={score:.4f} | {s1}"
-                )
-                if verbose:
-                    print(s2)
-                p_bar.set_postfix_str(s2)
-
-                if patience >= int(early_stopping):
-                    p_bar.set_postfix_str(s2 + " | Early stopping")
-                    break
-
-        p_bar.close()
-    else:
-        val_freq = max(1, int(val_freq))
-        p_bar = tqdm(range(1, int(epochs) + 1))
-
-        for ep in p_bar:
-            warmup_epochs = min(int(warmup_steps), int(epochs))
-            if int(epochs) <= int(warmup_epochs):
-                raise ValueError("epochs must be > warmup_steps to run at least one evaluation.")
-            if warmup_epochs > 0 and int(ep) <= int(warmup_epochs):
-                lr = float(lr_start) * (float(ep) / float(warmup_epochs))
-            else:
-                cosine_epochs = max(int(epochs) - int(warmup_epochs), 1)
-                cosine_step = int(ep) - int(warmup_epochs)
-                lr = cos_sin_lr(int(cosine_step) + 1, int(cosine_epochs), float(lr_start), float(lr_final))
-            set_optimizer_lr(opt, lr)
-
-            model.train()
-            running = 0.0
-            running_patch = 0.0
-            n_seen = 0
-
-            for bi, (x, y_log) in enumerate(dl_tr):
-                x = x.to(device, non_blocking=True)
-                y_log = y_log.to(device, non_blocking=True)
-                y_target = y_log
-                if pred_space == "gram":
-                    y_target = torch.expm1(y_log.float())
-                if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
-                    if torch.rand((), device=x.device).item() < mixup_p:
-                        bs = int(x.size(0))
-                        use_k3 = mixup_p3 > 0.0 and bs > 2 and torch.rand((), device=x.device).item() < mixup_p3
-                        if use_k3:
-                            perm1 = torch.randperm(bs, device=x.device)
-                            perm2 = torch.randperm(bs, device=x.device)
-                            x2 = x[perm1]
-                            x3 = x[perm2]
-                            weights = torch.distributions.Dirichlet(
-                                torch.full((3,), float(mixup_alpha), device=x.device)
-                            ).sample((bs,))
-                            w1, w2, w3 = weights[:, 0], weights[:, 1], weights[:, 2]
-                            w_shape = [bs] + [1] * (x.ndim - 1)
-                            x = x * w1.view(w_shape) + x2 * w2.view(w_shape) + x3 * w3.view(w_shape)
-
-                            w_y = weights.view(bs, 3)
-                            if pred_space == "log":
-                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                                y2_lin = torch.expm1(y_log[perm1].float()).clamp_min(0.0)
-                                y3_lin = torch.expm1(y_log[perm2].float()).clamp_min(0.0)
-                                y_mix = y_lin * w_y[:, [0]] + y2_lin * w_y[:, [1]] + y3_lin * w_y[:, [2]]
-                                y_target = torch.log1p(y_mix)
-                            else:
-                                y2 = y_target[perm1]
-                                y3 = y_target[perm2]
-                                y_target = y_target * w_y[:, [0]] + y2 * w_y[:, [1]] + y3 * w_y[:, [2]]
-                        else:
-                            perm = torch.randperm(bs, device=x.device)
-                            x2 = x[perm]
-                            y2 = y_target[perm]
-                            lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((bs,)).to(x.device)
-                            lam_x = lam.view([bs] + [1] * (x.ndim - 1))
-                            x = x * lam_x + x2 * (1.0 - lam_x)
-
-                            lam_y = lam.view(bs, 1)
-                            if pred_space == "log":
-                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                                y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
-                                y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
-                                y_target = torch.log1p(y_mix)
-                            else:
-                                y_target = y_target * lam_y + y2 * (1.0 - lam_y)
-
-                opt.zero_grad(set_to_none=True)
-                with autocast_context(device, dtype=trainable_dtype):
-                    if use_patch_aux:
-                        pred, patch_pred = model.forward_with_patch(x)
-                        loss_main = criterion(pred, y_target)
-                        loss_patch = criterion(patch_pred, y_target)
-                    else:
-                        pred = model(x)
-                        loss_main = criterion(pred, y_target)
-                    loss = loss_main
-                    if use_patch_aux:
-                        loss = loss + (float(tau_patch) * loss_patch)
-                    if neg_criterion is not None:
-                        loss = loss + neg_criterion(pred)
-
-                if scaler.is_enabled():
-                    scaler.scale(loss).backward()
-                    if clip_val and clip_val > 0:
-                        scaler.unscale_(opt)
-                        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
-                    scaler.step(opt)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    if clip_val and clip_val > 0:
-                        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
-                    opt.step()
-
-                bs = int(x.size(0))
-                running += float(loss_main.detach().item()) * bs
-                if use_patch_aux:
-                    running_patch += float(loss_patch.detach().item()) * bs
-                n_seen += bs
-
-            train_loss = running / max(int(n_seen), 1)
-            train_patch = running_patch / max(int(n_seen), 1) if use_patch_aux else None
-            do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
-            if int(ep) <= int(warmup_epochs):
-                do_eval = False
-            score = None
-            if do_eval:
-                model.eval()
-                score_curr = float(eval_global_wr2(model, dl_va, eval_w, device=device))
-                if top_k > 0:
-                    state_k = _save_parts(model)
-                    topk_list.append((float(score_curr), state_k))
-                    topk_list.sort(key=lambda x: float(x[0]), reverse=True)
-                    if len(topk_list) > int(top_k):
-                        topk_list.pop(-1)
-                if last_k > 0:
-                    state_k = _save_parts(model)
-                    recent_states.append(state_k)
-                    if len(recent_states) > int(last_k):
-                        recent_states.pop(0)
-                score = score_curr
-                if k_weights_val and (top_k > 0 or last_k > 0):
-                    if top_k > 0 and topk_list:
-                        state_eval = _avg_states([s for _, s in topk_list])
-                    elif last_k > 0 and recent_states:
-                        state_eval = _avg_states(recent_states)
-                    else:
-                        state_eval = _save_parts(model)
-                    orig_state = _save_parts(model)
-                    _load_parts(model, state_eval)
-                    score = float(eval_global_wr2(model, dl_va, eval_w, device=device))
-                    _load_parts(model, orig_state)
-
-            if comet_exp is not None and int(ep) > int(skip_log_first_n):
-                p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
-                if train_patch is not None:
-                    p[f"x_train_patch_cv{curr_fold}_m{model_idx}"] = float(train_patch)
-                if score is not None:
-                    p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
-                comet_exp.log_metrics(p, step=int(ep))
-
-            if score is not None and score > best_score:
-                best_score = float(score)
-                patience = 0
-                best_state = _save_parts(model)
-                best_opt_state = copy.deepcopy(opt.state_dict())
-                if last_k > 0 and recent_states:
-                    best_window_states = list(recent_states)
-            else:
-                if int(ep) > int(warmup_epochs):
-                    patience += 1
-
-            s1 = f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | lr: {lr:6.4f}"
-            if score is None:
-                s2 = (
-                    f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
-                    f"val_wR2=skip | {s1}"
-                )
-            else:
-                s2 = (
-                    f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
-                    f"val_wR2={score:.4f} | {s1}"
-                )
-            if verbose:
-                print(s2)
-            p_bar.set_postfix_str(s2)
-
-            if patience >= int(early_stopping):
-                p_bar.set_postfix_str(s2 + " | Early stopping")
-                break
-
-        p_bar.close()
+    p_bar.close()
 
     if best_state is None:
         best_state = _save_parts(model)

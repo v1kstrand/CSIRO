@@ -7,7 +7,8 @@ import os
 import subprocess
 import sys
 
-SCHEDULER = "scheduler.py"
+SETUPS_DIR = "/notebooks/setups"
+SCHEDULER = os.path.join(SETUPS_DIR, "scheduler.py")
 TRAIN_VIT = False
 SPAWN_DELAY_S = 10
 
@@ -34,7 +35,10 @@ def run_many(script: str = "main_init.py", configs: list[str] | None = None, spa
         return
     procs: list[subprocess.Popen] = []
     for config_id in configs:
-        p = subprocess.Popen([sys.executable, script, "run", config_id])
+        init_path = script
+        if not os.path.isabs(script):
+            init_path = os.path.join(SETUPS_DIR, script)
+        p = subprocess.Popen([sys.executable, init_path, "run", config_id])
         procs.append(p)
         time.sleep(spawn_delay_s)
     _ = [p.wait() for p in procs]

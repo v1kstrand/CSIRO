@@ -32,12 +32,13 @@ if __name__ == "__main__":
     def on_open(ws):
         print("[Terminal] Connected.")
         ws.send(json.dumps(["stdin", "bash\r"]))
+        setup_dir = "/notebooks/setups"
         if mode == "vit":
-            ws.send(json.dumps(["stdin", "bash main_init.sh vit\r"]))
+            ws.send(json.dumps(["stdin", f"bash {setup_dir}/main_init.sh vit\r"]))
         elif mode == "run":
-            ws.send(json.dumps(["stdin", f"bash main_init.sh run {arg}\r"]))
+            ws.send(json.dumps(["stdin", f"bash {setup_dir}/main_init.sh run {arg}\r"]))
         else:
-            ws.send(json.dumps(["stdin", f"bash main_init.sh cfg {arg}\r"]))
+            ws.send(json.dumps(["stdin", f"bash {setup_dir}/main_init.sh cfg {arg}\r"]))
 
     def on_error(ws, error):
         print("[Terminal] Error:", error)
