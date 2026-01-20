@@ -103,7 +103,7 @@ def set_optimizer_lr(opt, lr: float) -> None:
 
 def _trainable_blocks(m: torch.nn.Module) -> list[torch.nn.Module]:
     parts: list[torch.nn.Module] = []
-    for name in ("neck", "head", "norm"):
+    for name in ("neck", "head", "patch_head", "norm"):
         part = getattr(m, name, None)
         if part is not None:
             parts.append(part)
@@ -121,7 +121,7 @@ def _trainable_params_list(m: torch.nn.Module) -> list[torch.nn.Parameter]:
 
 def _save_parts(m: torch.nn.Module) -> dict[str, dict[str, torch.Tensor]]:
     state: dict[str, dict[str, torch.Tensor]] = {}
-    for name in ("neck", "head", "norm"):
+    for name in ("neck", "head", "patch_head", "norm"):
         part = getattr(m, name, None)
         if part is not None:
             state[name] = {k: v.detach().cpu() for k, v in part.state_dict().items()}
@@ -129,7 +129,7 @@ def _save_parts(m: torch.nn.Module) -> dict[str, dict[str, torch.Tensor]]:
 
 
 def _load_parts(m: torch.nn.Module, state: dict[str, dict[str, torch.Tensor]]) -> None:
-    for name in ("neck", "head", "norm"):
+    for name in ("neck", "head", "patch_head", "norm"):
         part = getattr(m, name, None)
         if part is not None and name in state:
             part.load_state_dict(state[name], strict=True)
@@ -242,6 +242,7 @@ def train_one_fold(
     loss_weights: list[float] | tuple[float, ...] | None = None,
     huber_beta: float | None = None,
     tau_neg: float | None = None,
+    tau_patch: float | None = None,
     out_format: str | None = None,
     neck_rope: bool | None = None,
     neck_pool: bool | None = None,
@@ -373,6 +374,17 @@ def train_one_fold(
     neg_criterion = None
     if float(tau_neg) > 0.0:
         neg_criterion = NegativityPenaltyLoss(tau_neg=float(tau_neg), pred_space=pred_space).to(device)
+
+    if tau_patch is None:
+        tau_patch = float(DEFAULTS.get("tau_patch", 0.0))
+    tau_patch = float(tau_patch)
+    use_patch_aux = (
+        tau_patch > 0.0
+        and pred_space == "log"
+        and isinstance(model, TiledDINOv3RegressorStitched3)
+    )
+    if use_patch_aux and str(getattr(model, "head_style", "single")).strip().lower() != "single":
+        raise ValueError("patch aux is only supported for head_style='single'.")
     
     trainable_params = _trainable_params_list(model)
     
@@ -425,6 +437,7 @@ def train_one_fold(
             raise ValueError("max_updates must be > warmup_steps to run at least one evaluation.")
         update_idx = 0
         running = 0.0
+        running_patch = 0.0
         n_seen = 0
         data_iter = iter(dl_tr)
         p_bar = tqdm(total=int(total_updates))
@@ -499,9 +512,16 @@ def train_one_fold(
                                 y_target = y_target * lam_y + y2 * (1.0 - lam_y)
 
                 with autocast_context(device, dtype=trainable_dtype):
-                    pred = model(x)
-                    loss_main = criterion(pred, y_target)
+                    if use_patch_aux:
+                        pred, patch_pred = model.forward_with_patch(x)
+                        loss_main = criterion(pred, y_target)
+                        loss_patch = criterion(patch_pred, y_target)
+                    else:
+                        pred = model(x)
+                        loss_main = criterion(pred, y_target)
                     loss = loss_main
+                    if use_patch_aux:
+                        loss = loss + (float(tau_patch) * loss_patch)
                     if neg_criterion is not None:
                         loss = loss + neg_criterion(pred)
 
@@ -513,6 +533,8 @@ def train_one_fold(
 
                 bs = int(x.size(0))
                 running += float(loss_main.detach().item()) * bs
+                if use_patch_aux:
+                    running_patch += float(loss_patch.detach().item()) * bs
                 n_seen += bs
 
             if scaler.is_enabled():
@@ -540,7 +562,9 @@ def train_one_fold(
             train_loss = None
             if do_eval:
                 train_loss = running / max(int(n_seen), 1)
+                train_patch = running_patch / max(int(n_seen), 1) if use_patch_aux else None
                 running = 0.0
+                running_patch = 0.0
                 n_seen = 0
                 model.eval()
                 score_curr = float(eval_global_wr2(model, dl_va, eval_w, device=device))
@@ -570,6 +594,8 @@ def train_one_fold(
 
                 if comet_exp is not None and int(update_idx) > int(skip_log_first_n):
                     p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
+                    if train_patch is not None:
+                        p[f"x_train_patch_cv{curr_fold}_m{model_idx}"] = float(train_patch)
                     p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
                     comet_exp.log_metrics(p, step=int(update_idx))
 
@@ -619,6 +645,7 @@ def train_one_fold(
 
             model.train()
             running = 0.0
+            running_patch = 0.0
             n_seen = 0
 
             for bi, (x, y_log) in enumerate(dl_tr):
@@ -673,9 +700,16 @@ def train_one_fold(
 
                 opt.zero_grad(set_to_none=True)
                 with autocast_context(device, dtype=trainable_dtype):
-                    pred = model(x)
-                    loss_main = criterion(pred, y_target)
+                    if use_patch_aux:
+                        pred, patch_pred = model.forward_with_patch(x)
+                        loss_main = criterion(pred, y_target)
+                        loss_patch = criterion(patch_pred, y_target)
+                    else:
+                        pred = model(x)
+                        loss_main = criterion(pred, y_target)
                     loss = loss_main
+                    if use_patch_aux:
+                        loss = loss + (float(tau_patch) * loss_patch)
                     if neg_criterion is not None:
                         loss = loss + neg_criterion(pred)
 
@@ -694,9 +728,12 @@ def train_one_fold(
 
                 bs = int(x.size(0))
                 running += float(loss_main.detach().item()) * bs
+                if use_patch_aux:
+                    running_patch += float(loss_patch.detach().item()) * bs
                 n_seen += bs
 
             train_loss = running / max(int(n_seen), 1)
+            train_patch = running_patch / max(int(n_seen), 1) if use_patch_aux else None
             do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
             if int(ep) <= int(warmup_epochs):
                 do_eval = False
@@ -730,6 +767,8 @@ def train_one_fold(
 
             if comet_exp is not None and int(ep) > int(skip_log_first_n):
                 p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
+                if train_patch is not None:
+                    p[f"x_train_patch_cv{curr_fold}_m{model_idx}"] = float(train_patch)
                 if score is not None:
                     p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
                 comet_exp.log_metrics(p, step=int(ep))

@@ -387,9 +387,18 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 norm_layer=norm_layer,
             )
             self.head = nn.ModuleList([self.head_green, self.head_clover, self.head_dead])
+            self.patch_head = None
         else:
             self.head = _build_head(
                 in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=3,
+                norm_layer=norm_layer,
+            )
+            self.patch_head = _build_head(
+                in_dim=self.feat_dim,
                 hidden=int(hidden),
                 depth=int(depth),
                 drop=float(drop),
@@ -425,7 +434,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         total = gdm + dead
         return torch.cat([green, clover, dead, gdm, total], dim=1)
 
-    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+    def _encode(self, x: torch.Tensor, *, return_patches: bool = False):
         if x.ndim != 5 or x.size(1) != 2:
             raise ValueError(f"Expected tiled input [B,2,C,H,W], got {tuple(x.shape)}")
         x_left = x[:, 0]
@@ -477,22 +486,54 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 else:
                     assert False, "SelfAttentionBlock requires rope"
         tokens = self.norm_neck(tokens)
-        
+        patch_tokens = tokens[:, int(2 * self.num_regs) :, :]
+
         if self.out_format == "mean":
-            return tokens.mean(dim=1)
-        if self.out_format == "cat_cls":
+            feats = tokens.mean(dim=1)
+        elif self.out_format == "cat_cls":
             cls1, cls2 = tokens[:, 0, :], tokens[:, 1, :]
-            return torch.cat([cls1, cls2], dim=1)
-        if self.out_format == "cat_cls_w_mean":
+            feats = torch.cat([cls1, cls2], dim=1)
+        elif self.out_format == "cat_cls_w_mean":
             cls1, cls2 = tokens[:, 0, :], tokens[:, 1, :]
             mean = tokens[:, 2:, :].mean(dim=1)
-            return torch.cat([cls1, cls2, mean], dim=1)
-        raise ValueError(f"Unknown out_format: {self.out_format}")
+            feats = torch.cat([cls1, cls2, mean], dim=1)
+        else:
+            raise ValueError(f"Unknown out_format: {self.out_format}")
+
+        if return_patches:
+            return feats, patch_tokens
+        return feats
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feats = self._encode(x)
         green, clover, dead = self._split_components(feats)
         return self._compose_outputs(green, clover, dead)
+
+    def forward_with_patch(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        feats, patch_tokens = self._encode(x, return_patches=True)
+        green, clover, dead = self._split_components(feats)
+        main_pred = self._compose_outputs(green, clover, dead)
+        if self.patch_head is None:
+            raise ValueError("patch_head is only supported for head_style='single'.")
+        if self.pred_space != "log":
+            raise ValueError("patch_head is only supported for pred_space='log'.")
+        bsz, n_patch, dim = patch_tokens.shape
+        patch_out = self.patch_head(patch_tokens.reshape(bsz * n_patch, dim)).reshape(bsz, n_patch, 3)
+        patch_lin = torch.expm1(patch_out.float()).clamp_min(0.0)
+        green_lin = patch_lin[:, :, 0].sum(dim=1, keepdim=True)
+        clover_lin = patch_lin[:, :, 1].sum(dim=1, keepdim=True)
+        dead_lin = patch_lin[:, :, 2].sum(dim=1, keepdim=True)
+        gdm_lin = green_lin + clover_lin
+        total_lin = gdm_lin + dead_lin
+        gdm_lin = gdm_lin.clamp_min(0.0)
+        total_lin = total_lin.clamp_min(0.0)
+        green_log = torch.log1p(green_lin)
+        clover_log = torch.log1p(clover_lin)
+        dead_log = torch.log1p(dead_lin)
+        gdm_log = torch.log1p(gdm_lin)
+        total_log = torch.log1p(total_lin)
+        patch_pred = torch.cat([green_log, clover_log, dead_log, gdm_log, total_log], dim=1)
+        return main_pred, patch_pred
 
     @torch.no_grad()
     def init(self) -> None:
@@ -501,6 +542,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
         else:
             modules += [*self.head.modules()]
+            if self.patch_head is not None:
+                modules += [*self.patch_head.modules()]
         _init_modules(modules)
 
 
