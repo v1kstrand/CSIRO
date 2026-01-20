@@ -232,6 +232,8 @@ def _build_model_from_state(
             out_format = str(state.get("out_format", DEFAULTS.get("out_format", "cat_cls"))).strip().lower()
             model_kwargs["out_format"] = out_format
             model_kwargs["neck_rope"] = bool(state.get("neck_rope", DEFAULTS.get("neck_rope", True)))
+            if model_cls is TiledDINOv3RegressorStitched3:
+                model_kwargs["neck_pool"] = bool(state.get("neck_pool", DEFAULTS.get("neck_pool", False)))
             model_kwargs["rope_rescale"] = state.get("rope_rescale", DEFAULTS.get("rope_rescale", None))
             model_kwargs["neck_drop"] = float(state.get("neck_drop", DEFAULTS.get("neck_drop", 0.0)))
             model_kwargs["drop_path"] = state.get("drop_path", DEFAULTS.get("drop_path", None))

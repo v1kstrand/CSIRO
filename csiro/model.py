@@ -295,6 +295,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         drop_path: dict[str, float] | None = None,
         rope_rescale = None,
         neck_ffn: bool = True,
+        neck_pool: bool = False,
         
     ):
         super().__init__()
@@ -307,6 +308,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.pred_space = _normalize_pred_space(pred_space)
         self.out_format = str(out_format).strip().lower()
         self.neck_rope = bool(neck_rope)
+        self.neck_pool = bool(neck_pool)
         self.num_regs = backbone.n_storage_tokens + 1 
         neck_drop = float(neck_drop)
         if not 0 <=neck_drop <= 1:
@@ -430,7 +432,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         x_right = x[:, 1]
         with torch.set_grad_enabled(self.backbone_grad):
             with autocast_context(x.device, dtype=self.backbone_dtype):
-                tok1, rope = _backbone_tokens(self.backbone, x_left)
+                tok1, _ = _backbone_tokens(self.backbone, x_left)
                 tok2, _ = _backbone_tokens(self.backbone, x_right)
         #tok1 = self.norm_bb(tok1)
         #tok2 = self.norm_bb(tok2)
@@ -447,18 +449,25 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         p = int(math.sqrt(int(n_tok)))
         if p * p != int(n_tok):
             raise ValueError(f"Patch tokens must form a square grid (got {n_tok}).")
-        if p % 2 != 0:
-            raise ValueError(f"Grid size P must be even for 1x2 pooling (got {p}).")
-        
+
         grid1 = patch1.reshape(bsz, p, p, dim)
         grid2 = patch2.reshape(bsz, p, p, dim)
-        grid1_half = grid1.reshape(bsz, p, p // 2, 2, dim).mean(dim=3)
-        grid2_half = grid2.reshape(bsz, p, p // 2, 2, dim).mean(dim=3)
-        grid_full = torch.cat([grid1_half, grid2_half], dim=2)
-        tok_grid = grid_full.reshape(bsz, p * p, dim)
+        if self.neck_pool:
+            if p % 2 != 0:
+                raise ValueError(f"Grid size P must be even for 1x2 pooling (got {p}).")
+            grid1_half = grid1.reshape(bsz, p, p // 2, 2, dim).mean(dim=3)
+            grid2_half = grid2.reshape(bsz, p, p // 2, 2, dim).mean(dim=3)
+            grid_full = torch.cat([grid1_half, grid2_half], dim=2)
+            tok_grid = grid_full.reshape(bsz, p * p, dim)
+            rope_h, rope_w = p, p
+        else:
+            grid_full = torch.cat([grid1, grid2], dim=2)
+            tok_grid = grid_full.reshape(bsz, p * (p * 2), dim)
+            rope_h, rope_w = p, p * 2
 
         tokens = torch.cat([cls1, cls2, regs1, regs2, tok_grid], dim=1)
-        rope_neck = rope if self.neck_rope else None
+
+        rope_neck = self.backbone.rope_embed(H=int(rope_h), W=int(rope_w)) if self.neck_rope else None
         for block in self.neck:
             try:
                 tokens = block(tokens, rope_neck)

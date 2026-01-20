@@ -190,6 +190,8 @@ def _build_model_from_state(
             model_kwargs["drop_path"] = state.get("drop_path", DEFAULTS.get("drop_path", None))
             model_kwargs["rope_rescale"] = state.get("rope_rescale", DEFAULTS.get("rope_rescale", None))
             model_kwargs["neck_ffn"] = bool(state.get("neck_ffn", DEFAULTS.get("neck_ffn", True)))
+            if model_cls is TiledDINOv3RegressorStitched3:
+                model_kwargs["neck_pool"] = bool(state.get("neck_pool", DEFAULTS.get("neck_pool", False)))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -242,6 +244,7 @@ def train_one_fold(
     tau_neg: float | None = None,
     out_format: str | None = None,
     neck_rope: bool | None = None,
+    neck_pool: bool | None = None,
     rope_rescale: float | None = None,
     neck_drop: float | None = None,
     drop_path: dict[str, float] | None = None,
@@ -321,6 +324,10 @@ def train_one_fold(
         if neck_rope is None:
             neck_rope = bool(DEFAULTS.get("neck_rope", True))
         model_kwargs["neck_rope"] = bool(neck_rope)
+        if model_cls is TiledDINOv3RegressorStitched3:
+            if neck_pool is None:
+                neck_pool = bool(DEFAULTS.get("neck_pool", False))
+            model_kwargs["neck_pool"] = bool(neck_pool)
         if rope_rescale is None:
             rope_rescale = DEFAULTS.get("rope_rescale", None)
         model_kwargs["rope_rescale"] = rope_rescale
@@ -1094,6 +1101,7 @@ def run_groupkfold_cv(
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
                         rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                        neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
                         neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
@@ -1130,6 +1138,7 @@ def run_groupkfold_cv(
                         neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
                         rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                        neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
                         neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),

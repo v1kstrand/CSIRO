@@ -81,6 +81,7 @@ DEFAULTS: dict[str, Any] = dict(
     head_depth=4,
     num_neck=1,
     neck_ffn=True,
+    neck_pool=False,
     top_k_weights=0,
     last_k_weights=0,
     k_weights_val=False,
