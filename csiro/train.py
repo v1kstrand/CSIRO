@@ -809,12 +809,10 @@ def run_groupkfold_cv(
         raise ValueError("run_name must contain at least one alnum/_/- character.")
     cv_state_path = None
     save_output_path = None
-    print(1)
     if save_output_dir is not None:
         state_dir = os.path.join(save_output_dir, "states")
         complete_dir = os.path.join(save_output_dir, "complete")
         cv_state_path = os.path.join(state_dir, f"{safe_name}_cv_state.pt")
-        print(cv_state_path, os.path.exists(cv_state_path))
         save_output_path = os.path.join(complete_dir, f"{safe_name}.pt")
 
     val_min_score = float(train_kwargs.get("val_min_score", DEFAULTS.get("val_min_score", 0.0)))
