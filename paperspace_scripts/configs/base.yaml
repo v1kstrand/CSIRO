@@ -1,0 +1,40 @@
+epochs: 100
+early_stopping: 18
+warmup_steps: 25
+batch_size: 256
+wd: 0.1
+lr_start: 0.0003
+lr_final: 0.000001
+head_hidden: 2048
+head_drop: 0.2
+head_depth: 2
+num_neck: 1
+clip_val: 1
+comet_exp_name: CSIRO_v19
+n_models: 3
+bcs_range: [0.2, 0.5]
+hue_range: [0.02, 0.05]
+cv_cfg: 1
+cutout: 0.0
+to_gray: 0.0
+mixup: [1, 0.5]
+backbone_size: l
+model_name: rect_full
+head_style: single
+pred_space: log
+img_preprocess: true
+tau_neg: 0.01
+out_format: cat_cls_w_mean
+tile_geom_mode: shared
+drop_path:
+  backbone: 0.0
+  neck: 0.0
+rope_rescale: null
+neck_drop: 0.0
+tiled_inp: false
+img_size: 512
+val_min_score: 0.75
+val_num_retry: 3
+last_k_weights: 4
+cv_resume: true
+save_output_dir: /notebooks/kaggle/csiro/output

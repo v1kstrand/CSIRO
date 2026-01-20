@@ -1,0 +1,8 @@
+output_dir: /notebooks/kaggle/csiro/output
+state_file: scheduler_state.yaml
+repo_root: /notebooks/CSIRO
+base_config: configs/base.yaml
+experiments_dir: configs/experiments
+config_queue:
+  - exp0.yaml
+max_runs: 2

@@ -4,7 +4,6 @@ import copy
 import math
 import os
 from typing import Any, Callable
-import uuid
 
 import numpy as np
 import torch
@@ -1016,9 +1015,19 @@ def run_groupkfold_cv(
     else:
         ds_va_view = TransformView(dataset, post_tfms())
 
+    model_name = str(train_kwargs.get("model_name", DEFAULTS.get("model_name", "")))
+    safe_name = "".join(c for c in str(model_name).strip() if c.isalnum() or c in "_-")
+    if not safe_name:
+        safe_name = "".join(c for c in str(config_name).strip() if c.isalnum() or c in "_-")
+    if not safe_name:
+        safe_name = "run"
     cv_state_path = None
+    save_output_path = None
     if save_output_dir is not None:
-        cv_state_path = os.path.join(save_output_dir, f"{config_name}_cv_state.pt")
+        state_dir = os.path.join(save_output_dir, "states")
+        complete_dir = os.path.join(save_output_dir, "complete")
+        cv_state_path = os.path.join(state_dir, f"{safe_name}_cv_state.pt")
+        save_output_path = os.path.join(complete_dir, f"{safe_name}.pt")
 
     val_min_score = float(train_kwargs.get("val_min_score", DEFAULTS.get("val_min_score", 0.0)))
     val_num_retry = int(train_kwargs.get("val_num_retry", DEFAULTS.get("val_num_retry", 1)))
@@ -1087,7 +1096,7 @@ def run_groupkfold_cv(
     def _save_cv_state(completed: bool, last_fold: int, last_model: int) -> None:
         if cv_state_path is None:
             return
-        os.makedirs(save_output_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(cv_state_path), exist_ok=True)
         torch.save(
             dict(
                 completed=bool(completed),
@@ -1101,8 +1110,7 @@ def run_groupkfold_cv(
             cv_state_path,
         )
     try:
-        uid = "_" + str(uuid.uuid4())[:3]
-        exp_name = config_name + uid
+        exp_name = safe_name
         if comet_exp is not None:
             exp_name = comet_exp_name + "_" + exp_name
             comet_exp.set_name(exp_name)
@@ -1363,9 +1371,8 @@ def run_groupkfold_cv(
             comet_exp.end()
 
     scores = np.asarray(fold_scores, dtype=np.float32)
-    if save_output_dir is not None:
-        os.makedirs(save_output_dir, exist_ok=True)
-        save_output_path = os.path.join(save_output_dir, exp_name + ".pt")
+    if save_output_path is not None:
+        os.makedirs(os.path.dirname(save_output_path), exist_ok=True)
         torch.save(
             {
                 "fold_scores": scores,
