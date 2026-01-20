@@ -489,15 +489,10 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             return torch.cat([cls1, cls2, mean], dim=1)
         raise ValueError(f"Unknown out_format: {self.out_format}")
 
-
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feats = self._encode(x)
         green, clover, dead = self._split_components(feats)
         return self._compose_outputs(green, clover, dead)
-
-    def set_backbone_grad(self, train: bool = True) -> None:
-        self.backbone_grad = bool(train)
 
     @torch.no_grad()
     def init(self) -> None:
