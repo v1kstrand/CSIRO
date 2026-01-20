@@ -1,54 +1,11 @@
-print("Waiting 5s for Jupyter init...")
-import time
-time.sleep(5)
+from __future__ import annotations
 
-import json
 import os
-import subprocess
-import sys
+import runpy
+from pathlib import Path
 
-SETUPS_DIR = "/notebooks/setups"
-SCHEDULER = os.path.join(SETUPS_DIR, "scheduler.py")
-TRAIN_VIT = False
-SPAWN_DELAY_S = 10
+SETUPS_DIR = Path("/notebooks/setups")
+MAIN_TRAIN = SETUPS_DIR / "main_train.py"
 
-
-def fetch_next_configs() -> list[str]:
-    result = subprocess.run(
-        [sys.executable, SCHEDULER, "next"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    stdout = result.stdout.strip()
-    if not stdout:
-        return []
-    configs = json.loads(stdout)
-    if not isinstance(configs, list):
-        raise ValueError("Scheduler output must be a JSON list.")
-    return [str(cfg) for cfg in configs]
-
-
-def run_many(script: str = "main_init.py", configs: list[str] | None = None, spawn_delay_s: float = 10.0) -> None:
-    if not configs:
-        print("No configs selected.")
-        return
-    procs: list[subprocess.Popen] = []
-    for config_id in configs:
-        init_path = script
-        if not os.path.isabs(script):
-            init_path = os.path.join(SETUPS_DIR, script)
-        p = subprocess.Popen([sys.executable, init_path, "run", config_id])
-        procs.append(p)
-        time.sleep(spawn_delay_s)
-    _ = [p.wait() for p in procs]
-
-
-if __name__ == "__main__":
-    if TRAIN_VIT:
-        print("TRAIN_VIT=True: starting train_vit.py")
-        run_many(configs=["vit"], spawn_delay_s=SPAWN_DELAY_S)
-    else:
-        configs = fetch_next_configs()
-        print(f"Starting configs: {configs}")
-        run_many(configs=configs, spawn_delay_s=SPAWN_DELAY_S)
+os.chdir(SETUPS_DIR)
+runpy.run_path(str(MAIN_TRAIN), run_name="__main__")
