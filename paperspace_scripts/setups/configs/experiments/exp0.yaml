@@ -1,4 +1,4 @@
-run_name: tiled_stitch
+model_name: tiled_stitch
 epochs: 100
 early_stopping: 18
 warmup_steps: 25
