@@ -50,5 +50,9 @@ if __name__ == "__main__":
         run_many(configs=["vit"], spawn_delay_s=SPAWN_DELAY_S)
     else:
         configs = fetch_next_configs()
-        print(f"Starting configs: {configs}")
-        run_many(configs=configs, spawn_delay_s=SPAWN_DELAY_S)
+        if configs:
+            print(f"Starting configs: {configs}")
+            run_many(configs=configs, spawn_delay_s=SPAWN_DELAY_S)
+        else:
+            print("No configs available; starting train_vit.py to keep GPU warm.")
+            run_many(configs=["vit"], spawn_delay_s=SPAWN_DELAY_S)
