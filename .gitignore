@@ -27,3 +27,5 @@ __.ipynb
 res.txt
 preds_eda_outputs/
 kaggle_submission/
+
+paperspace_scripts/

@@ -235,7 +235,7 @@ def train_one_fold(
     val_freq: int = 1,
     eval_every: int | None = None,
     backbone_size: str | None = None,
-    mixup: tuple[float, float] | None = None,
+    mixup: tuple[float, float] | dict[str, float] | None = None,
     model_name: str | None = None,
     head_style: str | None = None,
     pred_space: str | None = None,
@@ -283,10 +283,24 @@ def train_one_fold(
 
     if mixup is None:
         mixup = DEFAULTS.get("mixup", (0.0, 0.0))
-    if not isinstance(mixup, (list, tuple)) or len(mixup) != 2:
-        raise ValueError("mixup must be a (p, alpha) tuple.")
-    mixup_p = float(mixup[0])
-    mixup_alpha = float(mixup[1])
+    mixup_p = 0.0
+    mixup_p3 = 0.0
+    mixup_alpha = 0.0
+    if isinstance(mixup, dict):
+        mixup_p = float(mixup.get("p", mixup.get("p_mix", 0.0)))
+        mixup_p3 = float(mixup.get("p3", mixup.get("p3_mix", 0.0)))
+        mixup_alpha = float(mixup.get("alpha", 0.0))
+    elif isinstance(mixup, (list, tuple)) and len(mixup) == 2:
+        mixup_p = float(mixup[0])
+        mixup_alpha = float(mixup[1])
+    else:
+        raise ValueError("mixup must be a (p, alpha) tuple or dict with p/p3/alpha.")
+    if not (0.0 <= mixup_p <= 1.0):
+        raise ValueError(f"mixup p must be in [0,1] (got {mixup_p}).")
+    if not (0.0 <= mixup_p3 <= 1.0):
+        raise ValueError(f"mixup p3 must be in [0,1] (got {mixup_p3}).")
+    if mixup_alpha < 0.0:
+        raise ValueError(f"mixup alpha must be >= 0 (got {mixup_alpha}).")
 
     if backbone_size is None:
         backbone_size = str(DEFAULTS.get("backbone_size", "b"))
@@ -442,21 +456,47 @@ def train_one_fold(
                     y_target = torch.expm1(y_log.float())
                 if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
                     if torch.rand((), device=x.device).item() < mixup_p:
-                        perm = torch.randperm(int(x.size(0)), device=x.device)
-                        x2 = x[perm]
-                        y2 = y_target[perm]
-                        lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((x.size(0),)).to(x.device)
-                        lam_x = lam.view([x.size(0)] + [1] * (x.ndim - 1))
-                        x = x * lam_x + x2 * (1.0 - lam_x)
+                        bs = int(x.size(0))
+                        use_k3 = mixup_p3 > 0.0 and bs > 2 and torch.rand((), device=x.device).item() < mixup_p3
+                        if use_k3:
+                            perm1 = torch.randperm(bs, device=x.device)
+                            perm2 = torch.randperm(bs, device=x.device)
+                            x2 = x[perm1]
+                            x3 = x[perm2]
+                            weights = torch.distributions.Dirichlet(
+                                torch.full((3,), float(mixup_alpha), device=x.device)
+                            ).sample((bs,))
+                            w1, w2, w3 = weights[:, 0], weights[:, 1], weights[:, 2]
+                            w_shape = [bs] + [1] * (x.ndim - 1)
+                            x = x * w1.view(w_shape) + x2 * w2.view(w_shape) + x3 * w3.view(w_shape)
 
-                        lam_y = lam.view(x.size(0), 1)
-                        if pred_space == "log":
-                            y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                            y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
-                            y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
-                            y_target = torch.log1p(y_mix)
+                            w_y = weights.view(bs, 3)
+                            if pred_space == "log":
+                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                                y2_lin = torch.expm1(y_log[perm1].float()).clamp_min(0.0)
+                                y3_lin = torch.expm1(y_log[perm2].float()).clamp_min(0.0)
+                                y_mix = y_lin * w_y[:, [0]] + y2_lin * w_y[:, [1]] + y3_lin * w_y[:, [2]]
+                                y_target = torch.log1p(y_mix)
+                            else:
+                                y2 = y_target[perm1]
+                                y3 = y_target[perm2]
+                                y_target = y_target * w_y[:, [0]] + y2 * w_y[:, [1]] + y3 * w_y[:, [2]]
                         else:
-                            y_target = y_target * lam_y + y2 * (1.0 - lam_y)
+                            perm = torch.randperm(bs, device=x.device)
+                            x2 = x[perm]
+                            y2 = y_target[perm]
+                            lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((bs,)).to(x.device)
+                            lam_x = lam.view([bs] + [1] * (x.ndim - 1))
+                            x = x * lam_x + x2 * (1.0 - lam_x)
+
+                            lam_y = lam.view(bs, 1)
+                            if pred_space == "log":
+                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                                y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
+                                y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
+                                y_target = torch.log1p(y_mix)
+                            else:
+                                y_target = y_target * lam_y + y2 * (1.0 - lam_y)
 
                 with autocast_context(device, dtype=trainable_dtype):
                     pred = model(x)
@@ -589,21 +629,47 @@ def train_one_fold(
                     y_target = torch.expm1(y_log.float())
                 if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
                     if torch.rand((), device=x.device).item() < mixup_p:
-                        perm = torch.randperm(int(x.size(0)), device=x.device)
-                        x2 = x[perm]
-                        y2 = y_target[perm]
-                        lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((x.size(0),)).to(x.device)
-                        lam_x = lam.view([x.size(0)] + [1] * (x.ndim - 1))
-                        x = x * lam_x + x2 * (1.0 - lam_x)
+                        bs = int(x.size(0))
+                        use_k3 = mixup_p3 > 0.0 and bs > 2 and torch.rand((), device=x.device).item() < mixup_p3
+                        if use_k3:
+                            perm1 = torch.randperm(bs, device=x.device)
+                            perm2 = torch.randperm(bs, device=x.device)
+                            x2 = x[perm1]
+                            x3 = x[perm2]
+                            weights = torch.distributions.Dirichlet(
+                                torch.full((3,), float(mixup_alpha), device=x.device)
+                            ).sample((bs,))
+                            w1, w2, w3 = weights[:, 0], weights[:, 1], weights[:, 2]
+                            w_shape = [bs] + [1] * (x.ndim - 1)
+                            x = x * w1.view(w_shape) + x2 * w2.view(w_shape) + x3 * w3.view(w_shape)
 
-                        lam_y = lam.view(x.size(0), 1)
-                        if pred_space == "log":
-                            y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
-                            y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
-                            y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
-                            y_target = torch.log1p(y_mix)
+                            w_y = weights.view(bs, 3)
+                            if pred_space == "log":
+                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                                y2_lin = torch.expm1(y_log[perm1].float()).clamp_min(0.0)
+                                y3_lin = torch.expm1(y_log[perm2].float()).clamp_min(0.0)
+                                y_mix = y_lin * w_y[:, [0]] + y2_lin * w_y[:, [1]] + y3_lin * w_y[:, [2]]
+                                y_target = torch.log1p(y_mix)
+                            else:
+                                y2 = y_target[perm1]
+                                y3 = y_target[perm2]
+                                y_target = y_target * w_y[:, [0]] + y2 * w_y[:, [1]] + y3 * w_y[:, [2]]
                         else:
-                            y_target = y_target * lam_y + y2 * (1.0 - lam_y)
+                            perm = torch.randperm(bs, device=x.device)
+                            x2 = x[perm]
+                            y2 = y_target[perm]
+                            lam = torch.distributions.Beta(mixup_alpha, mixup_alpha).sample((bs,)).to(x.device)
+                            lam_x = lam.view([bs] + [1] * (x.ndim - 1))
+                            x = x * lam_x + x2 * (1.0 - lam_x)
+
+                            lam_y = lam.view(bs, 1)
+                            if pred_space == "log":
+                                y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
+                                y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
+                                y_mix = y_lin * lam_y + y2_lin * (1.0 - lam_y)
+                                y_target = torch.log1p(y_mix)
+                            else:
+                                y_target = y_target * lam_y + y2 * (1.0 - lam_y)
 
                 opt.zero_grad(set_to_none=True)
                 with autocast_context(device, dtype=trainable_dtype):
