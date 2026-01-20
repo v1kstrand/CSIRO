@@ -985,10 +985,6 @@ def run_groupkfold_cv(
                             f"x_val_retry_max_cv{fold_idx}_m{model_idx}": int(val_num_retry),
                         }
                         comet_exp.log_metrics(p)
-                    if verbose:
-                        tqdm.write(
-                            f"[fold {fold_idx} | model {int(model_idx)}] retry {int(attempts)}/{int(val_num_retry)}"
-                        )
                 if best_attempt is None:
                     return
                 result = best_attempt
