@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
@@ -29,10 +30,11 @@ def train_cv(
     dino_weights: str | None = None,
     model_size: str | None = None,  # "b" == ViT-Base
     plus: str = "",
-    overrides: dict[str, Any] | None = None,
+    overrides: dict[str, Any] | str | Path | None = None,
 ) -> Any:
-    
+
     cfg: dict[str, Any] = dict(DEFAULTS)
+    overrides = _load_overrides(overrides)
     if overrides:
         cfg.update(overrides)
     device = str(cfg.get("device", "cuda"))
@@ -122,3 +124,30 @@ def train_cv(
             )
     cfg["dataset"] = dataset_cache[cache_key]
     return run_groupkfold_cv(return_details=True, **cfg)
+
+
+def _load_overrides(overrides: dict[str, Any] | str | Path | None) -> dict[str, Any] | None:
+    if overrides is None:
+        return None
+    if isinstance(overrides, dict):
+        return overrides
+    path = Path(overrides)
+    if not path.is_file():
+        raise FileNotFoundError(f"overrides yaml not found: {path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("overrides yaml must be a mapping")
+    return data
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--overrides", type=str, default="")
+    args = parser.parse_args()
+    overrides_path = args.overrides.strip() or None
+    train_cv(overrides=overrides_path)
+
