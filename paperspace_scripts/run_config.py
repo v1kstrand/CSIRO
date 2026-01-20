@@ -61,12 +61,27 @@ def _load_config(schedule: dict, config_id: str) -> dict:
     return merged
 
 
-def _model_paths(output_dir: Path, model_name: str) -> dict:
+def _resolve_run_name(config: dict, config_id: str) -> str:
+    run_name = str(config.get("run_name", "")).strip()
+    model_name = str(config.get("model_name", "")).strip()
+    if run_name and model_name and run_name != model_name:
+        raise ValueError(
+            f"run_name and model_name must match for {config_id}; "
+            "use run_name only to avoid mismatched artifacts."
+        )
+    if not run_name:
+        run_name = model_name
+    if not run_name:
+        raise ValueError(f"run_name is required for {config_id}.")
+    return run_name
+
+
+def _model_paths(output_dir: Path, run_name: str) -> dict:
     states_dir = output_dir / "states"
     return dict(
-        checkpoint=states_dir / f"{model_name}_checkpoint.pt",
-        cv_state=states_dir / f"{model_name}_cv_state.pt",
-        final=(output_dir / "complete" / f"{model_name}.pt"),
+        checkpoint=states_dir / f"{run_name}_checkpoint.pt",
+        cv_state=states_dir / f"{run_name}_cv_state.pt",
+        final=(output_dir / "complete" / f"{run_name}.pt"),
     )
 
 
@@ -89,10 +104,10 @@ def _ensure_cv_state(checkpoint: Path, cv_state: Path) -> None:
         shutil.copy2(checkpoint, cv_state)
 
 
-def _finalize_output(output_dir: Path, model_name: str) -> None:
+def _finalize_output(output_dir: Path, run_name: str) -> None:
     complete_dir = output_dir / "complete"
     complete_dir.mkdir(parents=True, exist_ok=True)
-    final_path = complete_dir / f"{model_name}.pt"
+    final_path = complete_dir / f"{run_name}.pt"
     if not final_path.exists():
         return
 
@@ -106,7 +121,7 @@ def _mark_completed(state_path: Path, config_id: str) -> None:
     _save_state(state_path, state)
 
 
-def _run_training(config: dict, *, model_name: str, output_dir: Path, repo_root: Path) -> None:
+def _run_training(config: dict, *, run_name: str, output_dir: Path, repo_root: Path) -> None:
     if repo_root and str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
@@ -210,7 +225,7 @@ def _run_training(config: dict, *, model_name: str, output_dir: Path, repo_root:
             )
     kwargs["dataset"] = dataset_cache[cache_key]
     kwargs["wide_df"] = wide_df
-    kwargs["config_name"] = model_name
+    kwargs["config_name"] = run_name
     run_groupkfold_cv(return_details=True, **kwargs)
 
 
@@ -222,12 +237,13 @@ def main() -> int:
 
     schedule = _load_schedule(Path(args.schedule))
     config = _load_config(schedule, args.config_id)
-    model_name = str(config.get("model_name", "")).strip()
-    if not model_name:
-        raise ValueError("model_name is required in the merged config.")
+    run_name = _resolve_run_name(config, args.config_id)
+    config = dict(config)
+    config.pop("run_name", None)
+    config["model_name"] = run_name
 
     output_dir = schedule["output_dir"]
-    paths = _model_paths(output_dir, model_name)
+    paths = _model_paths(output_dir, run_name)
     paths["final"].parent.mkdir(parents=True, exist_ok=True)
 
     if paths["final"].exists():
@@ -241,11 +257,11 @@ def main() -> int:
 
     _run_training(
         config,
-        model_name=model_name,
+        run_name=run_name,
         output_dir=output_dir,
         repo_root=schedule["repo_root"],
     )
-    _finalize_output(output_dir, model_name)
+    _finalize_output(output_dir, run_name)
     if paths["final"].exists():
         paths["checkpoint"].unlink(missing_ok=True)
         paths["cv_state"].unlink(missing_ok=True)

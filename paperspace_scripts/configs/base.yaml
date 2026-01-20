@@ -19,7 +19,7 @@ cutout: 0.0
 to_gray: 0.0
 mixup: [1, 0.5]
 backbone_size: l
-model_name: rect_full
+run_name: rect_full
 head_style: single
 pred_space: log
 img_preprocess: true

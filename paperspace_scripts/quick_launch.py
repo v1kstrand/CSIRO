@@ -58,12 +58,27 @@ def _load_config(schedule: dict, config_id: str) -> dict:
     return deep_merge(base_cfg, override_cfg)
 
 
-def _model_paths(output_dir: Path, model_name: str) -> dict:
+def _resolve_run_name(config: dict, config_id: str) -> str:
+    run_name = str(config.get("run_name", "")).strip()
+    model_name = str(config.get("model_name", "")).strip()
+    if run_name and model_name and run_name != model_name:
+        raise ValueError(
+            f"run_name and model_name must match for {config_id}; "
+            "use run_name only to avoid mismatched artifacts."
+        )
+    if not run_name:
+        run_name = model_name
+    if not run_name:
+        raise ValueError(f"run_name is required for {config_id}.")
+    return run_name
+
+
+def _model_paths(output_dir: Path, run_name: str) -> dict:
     states_dir = output_dir / "states"
     return dict(
-        checkpoint=states_dir / f"{model_name}_checkpoint.pt",
-        cv_state=states_dir / f"{model_name}_cv_state.pt",
-        final=(output_dir / "complete" / f"{model_name}.pt"),
+        checkpoint=states_dir / f"{run_name}_checkpoint.pt",
+        cv_state=states_dir / f"{run_name}_cv_state.pt",
+        final=(output_dir / "complete" / f"{run_name}.pt"),
     )
 
 
@@ -81,10 +96,8 @@ def main() -> int:
     to_launch: list[str] = []
     for config_id in args.config_ids:
         config = _load_config(schedule, config_id)
-        model_name = str(config.get("model_name", "")).strip()
-        if not model_name:
-            raise ValueError(f"model_name is required for {config_id}.")
-        paths = _model_paths(output_dir, model_name)
+        run_name = _resolve_run_name(config, config_id)
+        paths = _model_paths(output_dir, run_name)
         if paths["final"].exists():
             print(f"[quick_launch] {config_id} already completed; skipping.")
             continue

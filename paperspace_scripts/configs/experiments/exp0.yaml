@@ -1,2 +1,2 @@
-model_name: rect_full
+run_name: rect_full
 neck_pool: true
