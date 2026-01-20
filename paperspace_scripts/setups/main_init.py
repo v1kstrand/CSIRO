@@ -8,11 +8,11 @@ from jupyter_client import KernelManager
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise RuntimeError("Usage: main_init.py <run|cfg|vit> [arg]")
+        raise RuntimeError("Usage: main_init.py <run|vit> [arg]")
     mode = sys.argv[1]
     arg = sys.argv[2] if len(sys.argv) > 2 else None
-    if mode in ("run", "cfg") and not arg:
-        raise RuntimeError(f"Usage: main_init.py {mode} <arg>")
+    if mode == "run" and not arg:
+        raise RuntimeError("Usage: main_init.py run <arg>")
 
     km = KernelManager()
     km.start_kernel()
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         elif mode == "run":
             ws.send(json.dumps(["stdin", f"bash {setup_dir}/main_init.sh run {arg}\r"]))
         else:
-            ws.send(json.dumps(["stdin", f"bash {setup_dir}/main_init.sh cfg {arg}\r"]))
+            raise RuntimeError(f"Unsupported mode: {mode}")
 
     def on_error(ws, error):
         print("[Terminal] Error:", error)

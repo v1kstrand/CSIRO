@@ -8,6 +8,7 @@ export TRITON_PRINT_AUTOTUNING=1
 export DEFAULT_DATA_ROOT="/notebooks/kaggle/csiro"
 export DINO_B_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
 export DINO_L_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+export PYTHONPATH="/notebooks/CSIRO:${PYTHONPATH:-}"
 
 
 set -e
@@ -32,13 +33,12 @@ echo "Done. Activate with:  source \"$VENV_DIR/bin/activate\""
 
 
 case "${1:-}" in
-  cfg)
-    i="${2:?Usage: $0 cfg <i>}"
-    python "$SETUPS_DIR/cfg${i}.py"
-    ;;
   run)
     cfg="${2:?Usage: $0 run <config>}"
-    python "$SETUPS_DIR/run_config.py" "$cfg"
+    if [[ "$cfg" != /* ]]; then
+      cfg="$SETUPS_DIR/configs/experiments/$cfg"
+    fi
+    python /notebooks/CSIRO/csiro/scripts/train_cv_func.py --overrides "$cfg"
     ;;
   vit)
     python -c "import timm" >/dev/null 2>&1 || python -m pip install -U timm
@@ -46,7 +46,7 @@ case "${1:-}" in
     ;;
   *)
     echo "Usage:"
-    echo "  $0 cfg <i>"
+    echo "  $0 run <config>"
     echo "  $0 vit"
     exit 1
     ;;

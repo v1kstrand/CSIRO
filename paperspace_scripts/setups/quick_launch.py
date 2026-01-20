@@ -79,7 +79,7 @@ def _model_paths(output_dir: Path, run_name: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("config_ids", nargs="+")
+    parser.add_argument("config_id")
     parser.add_argument("--schedule", default=str(DEFAULT_SCHEDULE))
     parser.add_argument("--spawn-delay", type=float, default=5.0)
     args = parser.parse_args()
@@ -88,26 +88,23 @@ def main() -> int:
     state = _load_state(schedule["state_path"])
     output_dir = schedule["output_dir"]
 
-    to_launch: list[str] = []
-    for config_id in args.config_ids:
-        config = _load_config(schedule, config_id)
-        run_name = _resolve_run_name(config, config_id)
-        paths = _model_paths(output_dir, run_name)
-        if paths["final"].exists():
-            print(f"[quick_launch] {config_id} already completed; skipping.")
-            continue
-        if config_id not in state["ongoing"]:
-            state["ongoing"].append(config_id)
-        if config_id not in to_launch:
-            to_launch.append(config_id)
+    config_id = args.config_id
+    config_path = _resolve_config_path(schedule["experiments_dir"], config_id)
+    config = _load_config(schedule, config_id)
+    run_name = _resolve_run_name(config, config_id)
+    paths = _model_paths(output_dir, run_name)
+    if paths["final"].exists():
+        print(f"[quick_launch] {config_id} already completed; skipping.")
+        return 0
+    if config_id not in state["ongoing"]:
+        state["ongoing"].append(config_id)
 
     _save_state(schedule["state_path"], state)
 
     script_dir = Path(__file__).resolve().parent
     main_init = script_dir / "main_init.py"
-    for config_id in to_launch:
-        subprocess.Popen([sys.executable, str(main_init), "run", config_id])
-        time.sleep(float(args.spawn_delay))
+    subprocess.Popen([sys.executable, str(main_init), "run", str(config_path)])
+    time.sleep(float(args.spawn_delay))
 
     return 0
 
