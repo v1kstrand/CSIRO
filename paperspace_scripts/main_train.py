@@ -9,16 +9,12 @@ import sys
 
 SCHEDULER = "scheduler.py"
 TRAIN_VIT = False
-MAX_RUNS = None
 SPAWN_DELAY_S = 10
 
 
-def fetch_next_configs(max_runs: int | None = None) -> list[str]:
-    cmd = [sys.executable, SCHEDULER, "next"]
-    if max_runs is not None:
-        cmd.extend(["--max-runs", str(max_runs)])
+def fetch_next_configs() -> list[str]:
     result = subprocess.run(
-        cmd,
+        [sys.executable, SCHEDULER, "next"],
         capture_output=True,
         text=True,
         check=True,
@@ -49,6 +45,6 @@ if __name__ == "__main__":
         print("TRAIN_VIT=True: starting train_vit.py")
         run_many(configs=["vit"], spawn_delay_s=SPAWN_DELAY_S)
     else:
-        configs = fetch_next_configs(MAX_RUNS)
+        configs = fetch_next_configs()
         print(f"Starting configs: {configs}")
         run_many(configs=configs, spawn_delay_s=SPAWN_DELAY_S)

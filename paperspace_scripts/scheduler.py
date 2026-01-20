@@ -19,7 +19,9 @@ def _load_schedule(path: Path) -> dict:
     state_path = output_dir / state_file
     experiments_dir = resolve_path(base_dir, schedule.get("experiments_dir", "configs/experiments"))
     base_config = resolve_path(base_dir, schedule.get("base_config", "configs/base.yaml"))
-    queue = list(schedule.get("config_queue", []) or [])
+    completed_dir = resolve_path(base_dir, schedule.get("completed_dir", "configs/completed"))
+    raw_queue = schedule.get("config_queue", None)
+    queue = None if raw_queue is None else list(raw_queue or [])
     max_runs = int(schedule.get("max_runs", 1))
     return dict(
         schedule_path=path,
@@ -27,6 +29,7 @@ def _load_schedule(path: Path) -> dict:
         state_path=state_path,
         experiments_dir=experiments_dir,
         base_config=base_config,
+        completed_dir=completed_dir,
         queue=queue,
         max_runs=max_runs,
     )
@@ -83,6 +86,34 @@ def _model_paths(output_dir: Path, run_name: str) -> dict:
     )
 
 
+def _scan_experiments(experiments_dir: Path) -> list[str]:
+    if experiments_dir is None or not experiments_dir.exists():
+        return []
+    paths = sorted(experiments_dir.glob("*.yaml"))
+    paths.extend(sorted(experiments_dir.glob("*.yml")))
+    return sorted({p.name for p in paths})
+
+
+def _move_config_to_completed(schedule: dict, config_id: str) -> None:
+    config_path = _resolve_config_path(schedule["experiments_dir"], config_id)
+    if not config_path.exists():
+        return
+    completed_dir = schedule["completed_dir"]
+    completed_dir.mkdir(parents=True, exist_ok=True)
+    dest = completed_dir / config_path.name
+    if dest.exists():
+        stem = config_path.stem
+        suffix = config_path.suffix
+        idx = 1
+        while True:
+            candidate = completed_dir / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                dest = candidate
+                break
+            idx += 1
+    config_path.replace(dest)
+
+
 def _cleanup_ongoing(schedule: dict, state: dict) -> None:
     output_dir = schedule["output_dir"]
     ongoing = []
@@ -102,6 +133,7 @@ def _cleanup_ongoing(schedule: dict, state: dict) -> None:
                 paths["cv_state"].unlink(missing_ok=True)
             if config_id not in state["completed"]:
                 state["completed"].append(config_id)
+            _move_config_to_completed(schedule, config_id)
             continue
         if not paths["checkpoint"].exists() and not paths["cv_state"].exists():
             state.setdefault("skipped", []).append(config_id)
@@ -114,6 +146,11 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
     queue = schedule["queue"]
     max_runs = schedule["max_runs"]
     output_dir = schedule["output_dir"]
+
+    if queue is None:
+        schedule["queue"] = _scan_experiments(schedule["experiments_dir"])
+        state["queue_index"] = 0
+        queue = schedule["queue"]
 
     if state["ongoing"]:
         return list(state["ongoing"])[:max_runs]
@@ -134,6 +171,7 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
         if paths["final"].exists():
             if config_id not in state["completed"]:
                 state["completed"].append(config_id)
+            _move_config_to_completed(schedule, config_id)
             continue
         selected.append(config_id)
     state["queue_index"] = idx

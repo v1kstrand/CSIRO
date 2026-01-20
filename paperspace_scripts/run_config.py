@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -21,12 +22,14 @@ def _load_schedule(path: Path) -> dict:
     state_path = output_dir / state_file
     experiments_dir = resolve_path(base_dir, schedule.get("experiments_dir", "configs/experiments"))
     base_config = resolve_path(base_dir, schedule.get("base_config", "configs/base.yaml"))
+    completed_dir = resolve_path(base_dir, schedule.get("completed_dir", "configs/completed"))
     repo_root = resolve_path(base_dir, schedule.get("repo_root", "/notebooks/CSIRO"))
     return dict(
         output_dir=output_dir,
         state_path=state_path,
         experiments_dir=experiments_dir,
         base_config=base_config,
+        completed_dir=completed_dir,
         repo_root=repo_root,
     )
 
@@ -84,6 +87,25 @@ def _model_paths(output_dir: Path, run_name: str) -> dict:
         final=(output_dir / "complete" / f"{run_name}.pt"),
     )
 
+
+def _move_config_to_completed(schedule: dict, config_id: str) -> None:
+    config_path = _resolve_config_path(schedule["experiments_dir"], config_id)
+    if not config_path.exists():
+        return
+    completed_dir = schedule["completed_dir"]
+    completed_dir.mkdir(parents=True, exist_ok=True)
+    dest = completed_dir / config_path.name
+    if dest.exists():
+        stem = config_path.stem
+        suffix = config_path.suffix
+        idx = 1
+        while True:
+            candidate = completed_dir / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                dest = candidate
+                break
+            idx += 1
+    config_path.replace(dest)
 
 def _ensure_checkpoint_link(checkpoint: Path, cv_state: Path) -> None:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -249,6 +271,7 @@ def main() -> int:
     if paths["final"].exists():
         paths["checkpoint"].unlink(missing_ok=True)
         paths["cv_state"].unlink(missing_ok=True)
+        _move_config_to_completed(schedule, args.config_id)
         _mark_completed(schedule["state_path"], args.config_id)
         return 0
 
@@ -265,6 +288,7 @@ def main() -> int:
     if paths["final"].exists():
         paths["checkpoint"].unlink(missing_ok=True)
         paths["cv_state"].unlink(missing_ok=True)
+        _move_config_to_completed(schedule, args.config_id)
         _mark_completed(schedule["state_path"], args.config_id)
     return 0
 

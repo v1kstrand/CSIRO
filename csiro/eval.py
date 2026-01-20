@@ -159,6 +159,50 @@ def _trainable_params(model: torch.nn.Module) -> list[torch.nn.Parameter]:
     return params
 
 
+def _avg_state_parts(states: list[dict[str, dict[str, torch.Tensor]]]) -> dict[str, dict[str, torch.Tensor]]:
+    if not states:
+        raise ValueError("Cannot average empty state list.")
+    out: dict[str, dict[str, torch.Tensor]] = {}
+    for name in states[0].keys():
+        if not isinstance(states[0][name], dict):
+            continue
+        out[name] = {}
+        keys = states[0][name].keys()
+        for k in keys:
+            vals = [s[name][k] for s in states]
+            if not torch.is_tensor(vals[0]):
+                out[name][k] = vals[0]
+                continue
+            if vals[0].is_floating_point():
+                stack = torch.stack([v.float() for v in vals], dim=0)
+                out[name][k] = stack.mean(dim=0).to(dtype=vals[0].dtype)
+            else:
+                out[name][k] = vals[0]
+    return out
+
+
+def _resolve_kweights_state(state: dict[str, Any], k_weights: int) -> dict[str, Any]:
+    if int(k_weights) <= 0:
+        return state
+    parts = state.get("parts")
+    if not isinstance(parts, dict):
+        return state
+    last_k_states = parts.get("last_k_states")
+    if not isinstance(last_k_states, list) or not last_k_states:
+        return state
+    k = min(int(k_weights), len(last_k_states))
+    if k <= 0:
+        return state
+    latest_first = bool(parts.get("last_k_latest_first", False))
+    use_states = last_k_states[:k] if latest_first else last_k_states[-k:]
+    avg_parts = _avg_state_parts(use_states)
+    new_state = dict(state)
+    new_parts = dict(parts)
+    new_parts.update(avg_parts)
+    new_state["parts"] = new_parts
+    return new_state
+
+
 def _resolve_param_spec(
     model: torch.nn.Module,
     param_spec: Any | None,
@@ -291,9 +335,12 @@ def predict_ensemble(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     outer_agg: str = "mean",
+    k_weights: int = 0,
     ttt: dict[str, Any] | tuple[int, float, float] | None = None,
 ) -> torch.Tensor:
     runs = _normalize_runs(states)
+    if int(k_weights) > 0:
+        runs = [[_resolve_kweights_state(s, int(k_weights)) for s in run] for run in runs]
 
     if isinstance(data, DataLoader):
         dl = data
@@ -422,9 +469,12 @@ def predict_ensemble_tiled(
     tta_agg: str = "mean",
     inner_agg: str = "mean",
     outer_agg: str = "mean",
+    k_weights: int = 0,
     ttt: dict[str, Any] | tuple[int, float, float] | None = None,
 ) -> torch.Tensor:
     runs = _normalize_runs(states)
+    if int(k_weights) > 0:
+        runs = [[_resolve_kweights_state(s, int(k_weights)) for s in run] for run in runs]
     _require_tiled_runs(runs)
 
     if isinstance(data, DataLoader):
