@@ -517,9 +517,13 @@ def train_one_fold(
                     loss = loss + (float(tau_patch) * loss_patch)
                 if neg_criterion is not None:
                     loss = loss + neg_criterion(pred)
+            if int(ep) == 1 and int(bi) == 0:
+                print(f"DEBUG: loss computed | fold={int(fold_idx)} model={int(model_idx)}")
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
+                if int(ep) == 1 and int(bi) == 0:
+                    print(f"DEBUG: backward (scaler) | fold={int(fold_idx)} model={int(model_idx)}")
                 if clip_val and clip_val > 0:
                     scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
@@ -527,9 +531,13 @@ def train_one_fold(
                 scaler.update()
             else:
                 loss.backward()
+                if int(ep) == 1 and int(bi) == 0:
+                    print(f"DEBUG: backward | fold={int(fold_idx)} model={int(model_idx)}")
                 if clip_val and clip_val > 0:
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 opt.step()
+            if int(ep) == 1 and int(bi) == 0:
+                print(f"DEBUG: opt step done | fold={int(fold_idx)} model={int(model_idx)}")
 
             bs = int(x.size(0))
             running += float(loss_main.detach().item()) * bs
