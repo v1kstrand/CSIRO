@@ -272,6 +272,10 @@ def train_one_fold(
     )
     dl_tr = DataLoader(tr_subset, shuffle=True, **dl_kwargs)
     dl_va = DataLoader(va_subset, shuffle=False, **{**dl_kwargs, "batch_size": int(val_bs)})
+    print(
+        f"DEBUG: train_one_fold start | fold={int(fold_idx)} model={int(model_idx)} "
+        f"train_bs={int(train_bs)} val_bs={int(val_bs)} workers={int(num_workers)}"
+    )
 
     if backbone_dtype is None:
         backbone_dtype = parse_dtype(DEFAULTS["backbone_dtype"])
@@ -425,6 +429,8 @@ def train_one_fold(
     p_bar = tqdm(range(1, int(epochs) + 1))
 
     for ep in p_bar:
+        if int(ep) == 1:
+            print(f"DEBUG: enter epoch {int(ep)} | fold={int(fold_idx)} model={int(model_idx)}")
         warmup_epochs = min(int(warmup_steps), int(epochs))
         if int(epochs) <= int(warmup_epochs):
             raise ValueError("epochs must be > warmup_steps to run at least one evaluation.")
@@ -442,6 +448,8 @@ def train_one_fold(
         n_seen = 0
 
         for bi, (x, y_log) in enumerate(dl_tr):
+            if int(ep) == 1 and int(bi) == 0:
+                print(f"DEBUG: got first batch | fold={int(fold_idx)} model={int(model_idx)}")
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
             y_target = y_log
@@ -494,10 +502,14 @@ def train_one_fold(
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 if use_patch_aux:
+                    if int(ep) == 1 and int(bi) == 0:
+                        print(f"DEBUG: forward_with_patch | fold={int(fold_idx)} model={int(model_idx)}")
                     pred, patch_pred = model.forward_with_patch(x)
                     loss_main = criterion(pred, y_target)
                     loss_patch = criterion(patch_pred, y_target)
                 else:
+                    if int(ep) == 1 and int(bi) == 0:
+                        print(f"DEBUG: forward | fold={int(fold_idx)} model={int(model_idx)}")
                     pred = model(x)
                     loss_main = criterion(pred, y_target)
                 loss = loss_main
