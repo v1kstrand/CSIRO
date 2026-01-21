@@ -867,6 +867,17 @@ def run_groupkfold_cv(
                 start_fold += 1
                 start_model = 0
             print(f"INFO: Resuming from fold {start_fold}, model {start_model}")
+
+    total_folds_dbg = int(max_folds) if max_folds is not None else int(n_splits)
+    print(
+        "DEBUG: resume start_fold/start_model/n_models/n_splits/max_folds -> "
+        f"{start_fold}/{start_model}/{int(n_models)}/{int(n_splits)}/{max_folds}"
+    )
+    if int(start_fold) >= int(total_folds_dbg):
+        print(
+            "DEBUG: No folds to run (start_fold >= total_folds). "
+            "Check max_folds or the resume state."
+        )
             
     exp_key = comet_exp = None
     if comet_exp_name is not None:
