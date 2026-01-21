@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from schedule_utils import deep_merge, dump_yaml, load_yaml, resolve_path
+from schedule_utils import deep_merge, load_yaml, resolve_path
 
 
 DEFAULT_SCHEDULE = Path(__file__).with_name("schedule.yaml")
@@ -16,43 +16,34 @@ def _load_schedule(path: Path) -> dict:
     schedule = load_yaml(path)
     base_dir = path.parent
     output_dir = Path(schedule.get("output_dir", "/notebooks/kaggle/csiro/output"))
-    state_file = schedule.get("state_file", "scheduler_state.yaml")
-    state_path = output_dir / state_file
     experiments_dir = resolve_path(base_dir, schedule.get("experiments_dir", "configs/experiments"))
+    ongoing_dir = resolve_path(base_dir, schedule.get("ongoing_dir", "configs/ongoing"))
     base_config = resolve_path(base_dir, schedule.get("base_config", "configs/base.yaml"))
     return dict(
         schedule_path=path,
         output_dir=output_dir,
-        state_path=state_path,
         experiments_dir=experiments_dir,
+        ongoing_dir=ongoing_dir,
         base_config=base_config,
     )
 
 
-def _load_state(state_path: Path) -> dict:
-    state = load_yaml(state_path)
-    state.setdefault("queue_index", 0)
-    state.setdefault("ongoing", [])
-    state.setdefault("completed", [])
-    state.setdefault("skipped", [])
-    return state
-
-
-def _save_state(state_path: Path, state: dict) -> None:
-    dump_yaml(state_path, state)
-
-
-def _resolve_config_path(experiments_dir: Path, config_id: str) -> Path:
+def _resolve_config_path(schedule: dict, config_id: str) -> Path:
     path = Path(config_id)
     if path.is_absolute():
         return path
-    return experiments_dir / path
+    for config_dir in (schedule["experiments_dir"], schedule["ongoing_dir"]):
+        if config_dir is None:
+            continue
+        candidate = config_dir / path
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Config not found: {config_id}")
 
 
-def _load_config(schedule: dict, config_id: str) -> dict:
+def _load_config(schedule: dict, config_path: Path) -> dict:
     base_cfg = load_yaml(schedule["base_config"]) if schedule["base_config"] else {}
-    override_path = _resolve_config_path(schedule["experiments_dir"], config_id)
-    override_cfg = load_yaml(override_path)
+    override_cfg = load_yaml(config_path)
     if "sweeps" in base_cfg or "sweeps" in override_cfg:
         raise ValueError("sweeps are no longer supported; create separate experiment entries.")
     return deep_merge(base_cfg, override_cfg)
@@ -85,21 +76,26 @@ def main() -> int:
     args = parser.parse_args()
 
     schedule = _load_schedule(Path(args.schedule))
-    state = _load_state(schedule["state_path"])
     output_dir = schedule["output_dir"]
 
     config_id = args.config_id
-    config_path = _resolve_config_path(schedule["experiments_dir"], config_id)
-    config = _load_config(schedule, config_id)
+    config_path = _resolve_config_path(schedule, config_id)
+    config = _load_config(schedule, config_path)
     run_name = _resolve_run_name(config, config_id)
     paths = _model_paths(output_dir, run_name)
     if paths["final"].exists():
         print(f"[quick_launch] {config_id} already completed; skipping.")
         return 0
-    if config_id not in state["ongoing"]:
-        state["ongoing"].append(config_id)
-
-    _save_state(schedule["state_path"], state)
+    ongoing_dir = schedule["ongoing_dir"]
+    if ongoing_dir is not None:
+        ongoing_dir.mkdir(parents=True, exist_ok=True)
+        if config_path.parent != ongoing_dir:
+            dest = ongoing_dir / config_path.name
+            if dest.exists():
+                config_path = dest
+            else:
+                config_path.replace(dest)
+                config_path = dest
 
     script_dir = Path(__file__).resolve().parent
     terminal_launch = script_dir / "terminal_launch.py"

@@ -1,4 +1,7 @@
-from __future__ import annotations
+import time
+
+print("Waiting 5s for Jupyter init...")
+time.sleep(5)
 
 import os
 import subprocess

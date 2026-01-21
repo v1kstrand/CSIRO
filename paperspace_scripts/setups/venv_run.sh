@@ -39,7 +39,11 @@ case "${1:-}" in
   run)
     cfg="${2:?Usage: $0 run <config>}"
     if [[ "$cfg" != /* ]]; then
-      cfg="$SETUPS_DIR/configs/experiments/$cfg"
+      if [[ -f "$SETUPS_DIR/configs/ongoing/$cfg" ]]; then
+        cfg="$SETUPS_DIR/configs/ongoing/$cfg"
+      else
+        cfg="$SETUPS_DIR/configs/experiments/$cfg"
+      fi
     fi
     python /notebooks/CSIRO/csiro/scripts/train_cv_func.py --overrides "$cfg"
     ;;
