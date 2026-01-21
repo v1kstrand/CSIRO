@@ -979,12 +979,6 @@ def run_groupkfold_cv(
                         best_attempt_score = score
                     if score >= float(val_min_score):
                         break
-                    if comet_exp is not None:
-                        p = {
-                            f"x_val_retry_cv{fold_idx}_m{model_idx}": int(attempts),
-                            f"x_val_retry_max_cv{fold_idx}_m{model_idx}": int(val_num_retry),
-                        }
-                        comet_exp.log_metrics(p)
                 if best_attempt is None:
                     return
                 result = best_attempt
