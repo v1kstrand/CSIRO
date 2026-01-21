@@ -296,7 +296,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         rope_rescale = None,
         neck_ffn: bool = True,
         neck_pool: bool = False,
-        
+        norm_bb_out: bool = False
     ):
         super().__init__()
         head_style = str(head_style).strip().lower()
@@ -326,7 +326,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
         
         assert rope_rescale is None or 1 <= rope_rescale <= 2
-        backbone.rope_embed.rescale_coords = rope_rescale
+        self.rope_rescale = rope_rescale
+        #backbone.rope_embed.rescale_coords = rope_rescale
 
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
@@ -358,7 +359,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         else:
             self.neck = nn.ModuleList()
 
-        #self.norm_bb = norm_layer(self.feat_dim)
+        self.norm_bb = norm_layer(self.feat_dim) if norm_bb_out else nn.Identity()
         self.norm_neck = norm_layer(self.feat_dim) if int(num_neck) > 0 else nn.Identity()
         self.head_style = head_style
         if head_style == "multi":
@@ -443,8 +444,10 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tok1, _ = _backbone_tokens(self.backbone, x_left)
                 tok2, _ = _backbone_tokens(self.backbone, x_right)
-        #tok1 = self.norm_bb(tok1)
-        #tok2 = self.norm_bb(tok2)
+        
+        if self.norm_bb_out:
+            tok1 = self.norm_bb(tok1)
+            tok2 = self.norm_bb(tok2)
 
         if tok1.size(1) <= int(self.num_regs):
             raise ValueError(f"Unexpected token length {tok1.size(1)} for num_regs={self.num_regs}.")
@@ -477,6 +480,9 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         tokens = torch.cat([cls1, cls2, regs1, regs2, tok_grid], dim=1)
 
         rope_neck = self.backbone.rope_embed(H=int(rope_h), W=int(rope_w)) if self.neck_rope else None
+        
+        if rope_neck is not None and self.rope_rescale is not None:
+            rope_neck.rescale_coords = self.rope_rescale
         for block in self.neck:
             try:
                 tokens = block(tokens, rope_neck)

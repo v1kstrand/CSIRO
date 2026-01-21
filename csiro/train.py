@@ -191,6 +191,7 @@ def _build_model_from_state(
             model_kwargs["neck_ffn"] = bool(state.get("neck_ffn", DEFAULTS.get("neck_ffn", True)))
             if model_cls is TiledDINOv3RegressorStitched3:
                 model_kwargs["neck_pool"] = bool(state.get("neck_pool", DEFAULTS.get("neck_pool", False)))
+                model_kwargs["norm_bb_out"] = bool(state.get("norm_bb_out", DEFAULTS.get("norm_bb_out", False)))
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -228,6 +229,8 @@ def train_one_fold(
     curr_fold: int = 0,
     model_idx: int = 0,
     return_state: bool = False,
+    attempt_idx: int | None = None,
+    attempt_max: int | None = None,
     tiled_inp: bool = False,
     val_freq: int = 1,
     backbone_size: str | None = None,
@@ -242,6 +245,7 @@ def train_one_fold(
     out_format: str | None = None,
     neck_rope: bool | None = None,
     neck_pool: bool | None = None,
+    norm_bb_out: bool | None = None,
     rope_rescale: float | None = None,
     neck_drop: float | None = None,
     drop_path: dict[str, float] | None = None,
@@ -339,6 +343,9 @@ def train_one_fold(
             if neck_pool is None:
                 neck_pool = bool(DEFAULTS.get("neck_pool", False))
             model_kwargs["neck_pool"] = bool(neck_pool)
+            if norm_bb_out is None:
+                norm_bb_out = bool(DEFAULTS.get("norm_bb_out", False))
+            model_kwargs["norm_bb_out"] = bool(norm_bb_out)
         if rope_rescale is None:
             rope_rescale = DEFAULTS.get("rope_rescale", None)
         model_kwargs["rope_rescale"] = rope_rescale
@@ -413,6 +420,8 @@ def train_one_fold(
     warmup_steps = max(0, int(warmup_steps))
 
     val_freq = max(1, int(val_freq))
+    attempt_idx = int(attempt_idx) if attempt_idx is not None else 1
+    attempt_max = int(attempt_max) if attempt_max is not None else 1
     p_bar = tqdm(range(1, int(epochs) + 1))
 
     for ep in p_bar:
@@ -568,7 +577,10 @@ def train_one_fold(
             if int(ep) > int(warmup_epochs):
                 patience += 1
 
-        s1 = f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | lr: {lr:6.4f}"
+        s1 = (
+            f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | "
+            f"try={attempt_idx}/{attempt_max} | lr: {lr:6.4f}"
+        )
         if score is None:
             s2 = (
                 f"[fold {fold_idx} | model {int(model_idx)}] | train_loss={train_loss:.4f} | "
@@ -965,6 +977,8 @@ def run_groupkfold_cv(
                             comet_exp=comet_exp,
                             curr_fold=int(fold_idx),
                             model_idx=int(model_idx),
+                            attempt_idx=int(attempts) + 1,
+                            attempt_max=int(val_num_retry),
                             return_state=True,
                             **inp_train_kwargs,
                         )
