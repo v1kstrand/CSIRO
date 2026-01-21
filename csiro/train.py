@@ -962,7 +962,9 @@ def run_groupkfold_cv(
                     **inp_train_kwargs,
                 )
                 if isinstance(result, float) and math.isnan(result):
-                    return
+                    raise ValueError(
+                        f"NaN result from train_one_fold at fold={int(fold_idx)} model={int(model_idx)} (attempt=1)."
+                    )
                 best_attempt = None
                 best_attempt_score = -1e9
                 attempts = 0
@@ -983,18 +985,27 @@ def run_groupkfold_cv(
                             **inp_train_kwargs,
                         )
                         if isinstance(result, float) and math.isnan(result):
-                            return
+                            raise ValueError(
+                                f"NaN result from train_one_fold at fold={int(fold_idx)} "
+                                f"model={int(model_idx)} (attempt={int(attempts) + 1})."
+                            )
                     attempts += 1
                     score = float(result["score"])
                     if math.isnan(score):
-                        return
+                        raise ValueError(
+                            f"NaN validation score at fold={int(fold_idx)} model={int(model_idx)} "
+                            f"(attempt={int(attempts)})."
+                        )
                     if score > best_attempt_score:
                         best_attempt = result
                         best_attempt_score = score
                     if score >= float(val_min_score):
                         break
                 if best_attempt is None:
-                    return
+                    raise ValueError(
+                        f"No valid attempt for fold={int(fold_idx)} model={int(model_idx)} "
+                        f"(val_num_retry={int(val_num_retry)})."
+                    )
                 result = best_attempt
                 result["val_failed"] = bool(float(result["score"]) < float(val_min_score))
                 result["val_attempts"] = int(attempts)
