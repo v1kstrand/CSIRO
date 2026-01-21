@@ -929,6 +929,7 @@ def run_groupkfold_cv(
                 break
             if int(fold_idx) < int(start_fold):
                 continue
+            print(f"DEBUG: enter fold {int(fold_idx)}")
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             model_states_best: list[dict[str, Any]] = []
@@ -939,6 +940,7 @@ def run_groupkfold_cv(
             for model_idx in range(int(n_models)):
                 if int(fold_idx) == int(start_fold) and int(model_idx) < int(start_model):
                     continue
+                print(f"DEBUG: enter model {int(model_idx)} (fold {int(fold_idx)})")
                 train_tfms = rect_train_tfms_list[int(model_idx)] if full_rect else train_tfms_list[int(model_idx)]
                 if tiled_inp:
                     if use_shared_geom:
@@ -973,6 +975,7 @@ def run_groupkfold_cv(
                     **inp_train_kwargs,
                 )
                 if isinstance(result, float) and math.isnan(result):
+                    print(f"DEBUG: NaN result pre-retry at fold {int(fold_idx)} model {int(model_idx)}")
                     raise ValueError(
                         f"NaN result from train_one_fold at fold={int(fold_idx)} model={int(model_idx)} (attempt=1)."
                     )
@@ -996,6 +999,7 @@ def run_groupkfold_cv(
                             **inp_train_kwargs,
                         )
                         if isinstance(result, float) and math.isnan(result):
+                            print(f"DEBUG: NaN result retry at fold {int(fold_idx)} model {int(model_idx)}")
                             raise ValueError(
                                 f"NaN result from train_one_fold at fold={int(fold_idx)} "
                                 f"model={int(model_idx)} (attempt={int(attempts) + 1})."
@@ -1003,6 +1007,7 @@ def run_groupkfold_cv(
                     attempts += 1
                     score = float(result["score"])
                     if math.isnan(score):
+                        print(f"DEBUG: NaN score at fold {int(fold_idx)} model {int(model_idx)}")
                         raise ValueError(
                             f"NaN validation score at fold={int(fold_idx)} model={int(model_idx)} "
                             f"(attempt={int(attempts)})."
@@ -1013,6 +1018,7 @@ def run_groupkfold_cv(
                     if score >= float(val_min_score):
                         break
                 if best_attempt is None:
+                    print(f"DEBUG: best_attempt None at fold {int(fold_idx)} model {int(model_idx)}")
                     raise ValueError(
                         f"No valid attempt for fold={int(fold_idx)} model={int(model_idx)} "
                         f"(val_num_retry={int(val_num_retry)})."
