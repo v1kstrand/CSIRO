@@ -445,9 +445,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 tok1, _ = _backbone_tokens(self.backbone, x_left)
                 tok2, _ = _backbone_tokens(self.backbone, x_right)
         
-        if self.norm_bb_out:
-            tok1 = self.norm_bb(tok1)
-            tok2 = self.norm_bb(tok2)
+        tok1 = self.norm_bb(tok1)
+        tok2 = self.norm_bb(tok2)
 
         if tok1.size(1) <= int(self.num_regs):
             raise ValueError(f"Unexpected token length {tok1.size(1)} for num_regs={self.num_regs}.")

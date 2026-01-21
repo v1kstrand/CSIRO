@@ -272,10 +272,6 @@ def train_one_fold(
     )
     dl_tr = DataLoader(tr_subset, shuffle=True, **dl_kwargs)
     dl_va = DataLoader(va_subset, shuffle=False, **{**dl_kwargs, "batch_size": int(val_bs)})
-    print(
-        f"DEBUG: train_one_fold start | fold={int(fold_idx)} model={int(model_idx)} "
-        f"train_bs={int(train_bs)} val_bs={int(val_bs)} workers={int(num_workers)}"
-    )
 
     if backbone_dtype is None:
         backbone_dtype = parse_dtype(DEFAULTS["backbone_dtype"])
@@ -429,8 +425,6 @@ def train_one_fold(
     p_bar = tqdm(range(1, int(epochs) + 1))
 
     for ep in p_bar:
-        if int(ep) == 1:
-            print(f"DEBUG: enter epoch {int(ep)} | fold={int(fold_idx)} model={int(model_idx)}")
         warmup_epochs = min(int(warmup_steps), int(epochs))
         if int(epochs) <= int(warmup_epochs):
             raise ValueError("epochs must be > warmup_steps to run at least one evaluation.")
@@ -448,8 +442,6 @@ def train_one_fold(
         n_seen = 0
 
         for bi, (x, y_log) in enumerate(dl_tr):
-            if int(ep) == 1 and int(bi) == 0:
-                print(f"DEBUG: got first batch | fold={int(fold_idx)} model={int(model_idx)}")
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
             y_target = y_log
@@ -502,32 +494,20 @@ def train_one_fold(
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
                 if use_patch_aux:
-                    if int(ep) == 1 and int(bi) == 0:
-                        print(f"DEBUG: forward_with_patch | fold={int(fold_idx)} model={int(model_idx)}")
                     pred, patch_pred = model.forward_with_patch(x)
-                    if int(ep) == 1 and int(bi) == 0:
-                        print(f"DEBUG: forward_with_patch done | fold={int(fold_idx)} model={int(model_idx)}")
                     loss_main = criterion(pred, y_target)
                     loss_patch = criterion(patch_pred, y_target)
                 else:
-                    if int(ep) == 1 and int(bi) == 0:
-                        print(f"DEBUG: forward | fold={int(fold_idx)} model={int(model_idx)}")
                     pred = model(x)
-                    if int(ep) == 1 and int(bi) == 0:
-                        print(f"DEBUG: forward done | fold={int(fold_idx)} model={int(model_idx)}")
                     loss_main = criterion(pred, y_target)
                 loss = loss_main
                 if use_patch_aux:
                     loss = loss + (float(tau_patch) * loss_patch)
                 if neg_criterion is not None:
                     loss = loss + neg_criterion(pred)
-            if int(ep) == 1 and int(bi) == 0:
-                print(f"DEBUG: loss computed | fold={int(fold_idx)} model={int(model_idx)}")
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
-                if int(ep) == 1 and int(bi) == 0:
-                    print(f"DEBUG: backward (scaler) | fold={int(fold_idx)} model={int(model_idx)}")
                 if clip_val and clip_val > 0:
                     scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
@@ -535,13 +515,9 @@ def train_one_fold(
                 scaler.update()
             else:
                 loss.backward()
-                if int(ep) == 1 and int(bi) == 0:
-                    print(f"DEBUG: backward | fold={int(fold_idx)} model={int(model_idx)}")
                 if clip_val and clip_val > 0:
                     torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=float(clip_val))
                 opt.step()
-            if int(ep) == 1 and int(bi) == 0:
-                print(f"DEBUG: opt step done | fold={int(fold_idx)} model={int(model_idx)}")
 
             bs = int(x.size(0))
             running += float(loss_main.detach().item()) * bs
@@ -892,17 +868,6 @@ def run_groupkfold_cv(
                 start_model = 0
             print(f"INFO: Resuming from fold {start_fold}, model {start_model}")
 
-    total_folds_dbg = int(max_folds) if max_folds is not None else int(n_splits)
-    print(
-        "DEBUG: resume start_fold/start_model/n_models/n_splits/max_folds -> "
-        f"{start_fold}/{start_model}/{int(n_models)}/{int(n_splits)}/{max_folds}"
-    )
-    if int(start_fold) >= int(total_folds_dbg):
-        print(
-            "DEBUG: No folds to run (start_fold >= total_folds). "
-            "Check max_folds or the resume state."
-        )
-            
     exp_key = comet_exp = None
     if comet_exp_name is not None:
         import comet_ml  # type: ignore
@@ -942,6 +907,7 @@ def run_groupkfold_cv(
             ),
             cv_state_path,
         )
+    comet_ended = False
     try:
         exp_name = safe_name
         if comet_exp is not None:
@@ -953,7 +919,6 @@ def run_groupkfold_cv(
                 break
             if int(fold_idx) < int(start_fold):
                 continue
-            print(f"DEBUG: enter fold {int(fold_idx)}")
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             model_states_best: list[dict[str, Any]] = []
@@ -964,7 +929,6 @@ def run_groupkfold_cv(
             for model_idx in range(int(n_models)):
                 if int(fold_idx) == int(start_fold) and int(model_idx) < int(start_model):
                     continue
-                print(f"DEBUG: enter model {int(model_idx)} (fold {int(fold_idx)})")
                 train_tfms = rect_train_tfms_list[int(model_idx)] if full_rect else train_tfms_list[int(model_idx)]
                 if tiled_inp:
                     if use_shared_geom:
@@ -999,7 +963,6 @@ def run_groupkfold_cv(
                     **inp_train_kwargs,
                 )
                 if isinstance(result, float) and math.isnan(result):
-                    print(f"DEBUG: NaN result pre-retry at fold {int(fold_idx)} model {int(model_idx)}")
                     raise ValueError(
                         f"NaN result from train_one_fold at fold={int(fold_idx)} model={int(model_idx)} (attempt=1)."
                     )
@@ -1023,7 +986,6 @@ def run_groupkfold_cv(
                             **inp_train_kwargs,
                         )
                         if isinstance(result, float) and math.isnan(result):
-                            print(f"DEBUG: NaN result retry at fold {int(fold_idx)} model {int(model_idx)}")
                             raise ValueError(
                                 f"NaN result from train_one_fold at fold={int(fold_idx)} "
                                 f"model={int(model_idx)} (attempt={int(attempts) + 1})."
@@ -1031,7 +993,6 @@ def run_groupkfold_cv(
                     attempts += 1
                     score = float(result["score"])
                     if math.isnan(score):
-                        print(f"DEBUG: NaN score at fold {int(fold_idx)} model {int(model_idx)}")
                         raise ValueError(
                             f"NaN validation score at fold={int(fold_idx)} model={int(model_idx)} "
                             f"(attempt={int(attempts)})."
@@ -1042,7 +1003,6 @@ def run_groupkfold_cv(
                     if score >= float(val_min_score):
                         break
                 if best_attempt is None:
-                    print(f"DEBUG: best_attempt None at fold {int(fold_idx)} model {int(model_idx)}")
                     raise ValueError(
                         f"No valid attempt for fold={int(fold_idx)} model={int(model_idx)} "
                         f"(val_num_retry={int(val_num_retry)})."
@@ -1212,19 +1172,21 @@ def run_groupkfold_cv(
         if fold_scores:
             last_fold = int(min(len(fold_scores), total_folds) - 1)
             _save_cv_state(len(fold_scores) >= total_folds, last_fold, int(n_models) - 1)
-        """finally:
-            if comet_exp is not None:
-                if fold_scores:
-                    total_folds = int(max_folds) if max_folds is not None else int(n_splits)
-                    if len(fold_scores) < int(total_folds):
-                        comet_exp.end()
-                        return
+    except Exception:  # pragma: no cover
+        if comet_exp is not None:
+            comet_exp.end()
+            comet_ended = True
+        raise
+    finally:
+        if comet_exp is not None and not comet_ended:
+            if fold_scores:
+                total_folds = int(max_folds) if max_folds is not None else int(n_splits)
+                if len(fold_scores) >= int(total_folds):
                     fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
                     comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
                     comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
-                comet_exp.end()"""
-    except Exception as e:  # pragma: no cover
-        raise e
+            comet_exp.end()
+
 
     scores = np.asarray(fold_scores, dtype=np.float32)
     if save_output_path is not None:
