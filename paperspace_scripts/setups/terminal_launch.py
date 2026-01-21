@@ -10,11 +10,11 @@ from jupyter_client import KernelManager
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise RuntimeError("Usage: main_init.py <run|vit|backup> [arg]")
+        raise RuntimeError("Usage: terminal_launch.py <init|run|vit|backup> [arg]")
     mode = sys.argv[1]
     arg = sys.argv[2] if len(sys.argv) > 2 else None
     if mode == "run" and not arg:
-        raise RuntimeError("Usage: main_init.py run <arg>")
+        raise RuntimeError("Usage: terminal_launch.py run <arg>")
 
     km = KernelManager()
     km.start_kernel()
@@ -32,12 +32,14 @@ if __name__ == "__main__":
     term_name = resp.json()['name']
 
     setup_dir = "/notebooks/setups"
-    if mode == "backup":
-        launch_cmd = f"bash {setup_dir}/gpu_backup.sh vit"
+    if mode == "init":
+        launch_cmd = f"bash {setup_dir}/venv_run.sh scheduler"
+    elif mode == "backup":
+        launch_cmd = f"bash {setup_dir}/gpu_backup.sh"
     elif mode == "vit":
-        launch_cmd = f"bash {setup_dir}/main_init.sh vit"
+        launch_cmd = f"bash {setup_dir}/venv_run.sh vit"
     elif mode == "run":
-        launch_cmd = f"bash {setup_dir}/main_init.sh run {shlex.quote(arg)}"
+        launch_cmd = f"bash {setup_dir}/venv_run.sh run {shlex.quote(arg)}"
     else:
         raise RuntimeError(f"Unsupported mode: {mode}")
 

@@ -33,6 +33,9 @@ echo "Done. Activate with:  source \"$VENV_DIR/bin/activate\""
 
 
 case "${1:-}" in
+  scheduler)
+    python "$SETUPS_DIR/scheduler_loop.py"
+    ;;
   run)
     cfg="${2:?Usage: $0 run <config>}"
     if [[ "$cfg" != /* ]]; then
@@ -46,6 +49,7 @@ case "${1:-}" in
     ;;
   *)
     echo "Usage:"
+    echo "  $0 scheduler"
     echo "  $0 run <config>"
     echo "  $0 vit"
     exit 1

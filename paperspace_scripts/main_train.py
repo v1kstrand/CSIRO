@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 SETUPS_DIR = Path("/notebooks/setups")
-MAIN_TRAIN = SETUPS_DIR / "main_train.py"
+TERMINAL_LAUNCH = SETUPS_DIR / "terminal_launch.py"
 
 os.chdir(SETUPS_DIR)
-runpy.run_path(str(MAIN_TRAIN), run_name="__main__")
+subprocess.run([sys.executable, str(TERMINAL_LAUNCH), "init"], check=True)

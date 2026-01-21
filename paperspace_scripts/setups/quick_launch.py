@@ -102,8 +102,8 @@ def main() -> int:
     _save_state(schedule["state_path"], state)
 
     script_dir = Path(__file__).resolve().parent
-    main_init = script_dir / "main_init.py"
-    subprocess.Popen([sys.executable, str(main_init), "run", str(config_path)])
+    terminal_launch = script_dir / "terminal_launch.py"
+    subprocess.Popen([sys.executable, str(terminal_launch), "run", str(config_path)])
     time.sleep(float(args.spawn_delay))
 
     return 0

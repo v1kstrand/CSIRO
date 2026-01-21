@@ -32,7 +32,7 @@ def fetch_next_configs() -> list[str]:
     return [str(cfg) for cfg in configs]
 
 
-def spawn_init(config_id: str, script: str = "main_init.py") -> subprocess.Popen:
+def spawn_init(config_id: str, script: str = "terminal_launch.py") -> subprocess.Popen:
     init_path = script
     if not os.path.isabs(script):
         init_path = os.path.join(SETUPS_DIR, script)
