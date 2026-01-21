@@ -116,13 +116,14 @@ def _cleanup_ongoing(schedule: dict, state: dict) -> None:
     output_dir = schedule["output_dir"]
     ongoing = []
     dropped = 0
+    skipped = set(state.get("skipped", []))
     for config_id in list(state.get("ongoing", [])):
         try:
             cfg = _load_config(schedule, config_id)
             run_name = _resolve_run_name(cfg, config_id)
         except Exception as exc:
             _log(f"skip {config_id}: {exc}")
-            state.setdefault("skipped", []).append(config_id)
+            skipped.add(config_id)
             dropped += 1
             continue
         paths = _model_paths(output_dir, run_name)
@@ -137,11 +138,12 @@ def _cleanup_ongoing(schedule: dict, state: dict) -> None:
             dropped += 1
             continue
         if not paths["checkpoint"].exists() and not paths["cv_state"].exists():
-            state.setdefault("skipped", []).append(config_id)
+            skipped.add(config_id)
             dropped += 1
             continue
         ongoing.append(config_id)
     state["ongoing"] = ongoing
+    state["skipped"] = sorted(skipped)
     if dropped:
         _log(f"pruned {dropped} ongoing entries")
 
@@ -150,6 +152,7 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
     queue = schedule["queue"]
     max_runs = schedule["max_runs"]
     output_dir = schedule["output_dir"]
+    skipped = set(state.get("skipped", []))
 
     if queue is None:
         schedule["queue"] = _scan_experiments(schedule["experiments_dir"])
@@ -157,20 +160,20 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
         queue = schedule["queue"]
         _log(f"auto-queued {len(queue)} configs from {schedule['experiments_dir']}")
 
-    if state["ongoing"]:
-        return list(state["ongoing"])[:max_runs]
+    selected: list[str] = list(state["ongoing"])[:max_runs]
 
-    selected: list[str] = []
     idx = int(state.get("queue_index", 0))
     while len(selected) < max_runs and idx < len(queue):
         config_id = str(queue[idx])
         idx += 1
+        if config_id in selected:
+            continue
         try:
             cfg = _load_config(schedule, config_id)
             run_name = _resolve_run_name(cfg, config_id)
         except Exception as exc:
             _log(f"skip {config_id}: {exc}")
-            state.setdefault("skipped", []).append(config_id)
+            skipped.add(config_id)
             continue
         paths = _model_paths(output_dir, run_name)
         if paths["final"].exists():
@@ -181,6 +184,7 @@ def _select_next(schedule: dict, state: dict) -> list[str]:
         selected.append(config_id)
     state["queue_index"] = idx
     state["ongoing"] = selected
+    state["skipped"] = sorted(skipped)
     return selected
 
 

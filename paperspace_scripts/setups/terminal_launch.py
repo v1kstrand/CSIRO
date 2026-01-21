@@ -33,7 +33,7 @@ if __name__ == "__main__":
 
     setup_dir = "/notebooks/setups"
     if mode == "init":
-        launch_cmd = f"bash {setup_dir}/venv_run.sh scheduler"
+        launch_cmd = f"python {setup_dir}/scheduler_loop.py"
     elif mode == "backup":
         launch_cmd = f"bash {setup_dir}/gpu_backup.sh"
     elif mode == "vit":

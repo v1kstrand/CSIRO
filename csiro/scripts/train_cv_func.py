@@ -55,6 +55,26 @@ def train_cv(
             device=device,
         )
     )
+    run_name = str(cfg.get("run_name", "")).strip()
+    if not run_name:
+        raise ValueError("run_name must be set (used for artifact naming).")
+    save_output_dir = cfg.get("save_output_dir", None)
+    if save_output_dir:
+        state_dir = os.path.join(str(save_output_dir), "states")
+        os.makedirs(state_dir, exist_ok=True)
+        state_path = os.path.join(state_dir, f"{run_name}_cv_state.pt")
+        if not os.path.exists(state_path):
+            torch.save(
+                dict(
+                    completed=False,
+                    last_completed_fold=-1,
+                    last_completed_model=-1,
+                    fold_scores=[],
+                    fold_model_scores=[],
+                    states=[],
+                ),
+                state_path,
+            )
 
     if (
         "backbone_size" in cfg
@@ -150,4 +170,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     overrides_path = args.overrides.strip() or None
     train_cv(overrides=overrides_path)
-
