@@ -1212,17 +1212,17 @@ def run_groupkfold_cv(
         if fold_scores:
             last_fold = int(min(len(fold_scores), total_folds) - 1)
             _save_cv_state(len(fold_scores) >= total_folds, last_fold, int(n_models) - 1)
-    """finally:
-        if comet_exp is not None:
-            if fold_scores:
-                total_folds = int(max_folds) if max_folds is not None else int(n_splits)
-                if len(fold_scores) < int(total_folds):
-                    comet_exp.end()
-                    return
-                fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
-                comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
-                comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
-            comet_exp.end()"""
+        """finally:
+            if comet_exp is not None:
+                if fold_scores:
+                    total_folds = int(max_folds) if max_folds is not None else int(n_splits)
+                    if len(fold_scores) < int(total_folds):
+                        comet_exp.end()
+                        return
+                    fold_scores_np = np.asarray(fold_scores, dtype=np.float32)
+                    comet_exp.log_metric("0cv_mean", fold_scores_np.mean())
+                    comet_exp.log_metric("0cv_std", fold_scores_np.std(ddof=0))
+                comet_exp.end()"""
     except Exception as e:  # pragma: no cover
         raise e
 
