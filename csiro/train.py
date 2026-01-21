@@ -505,12 +505,16 @@ def train_one_fold(
                     if int(ep) == 1 and int(bi) == 0:
                         print(f"DEBUG: forward_with_patch | fold={int(fold_idx)} model={int(model_idx)}")
                     pred, patch_pred = model.forward_with_patch(x)
+                    if int(ep) == 1 and int(bi) == 0:
+                        print(f"DEBUG: forward_with_patch done | fold={int(fold_idx)} model={int(model_idx)}")
                     loss_main = criterion(pred, y_target)
                     loss_patch = criterion(patch_pred, y_target)
                 else:
                     if int(ep) == 1 and int(bi) == 0:
                         print(f"DEBUG: forward | fold={int(fold_idx)} model={int(model_idx)}")
                     pred = model(x)
+                    if int(ep) == 1 and int(bi) == 0:
+                        print(f"DEBUG: forward done | fold={int(fold_idx)} model={int(model_idx)}")
                     loss_main = criterion(pred, y_target)
                 loss = loss_main
                 if use_patch_aux:
