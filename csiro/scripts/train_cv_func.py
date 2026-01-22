@@ -22,7 +22,7 @@ from csiro.config import (
 from csiro.data import BiomassBaseCached, BiomassFullCached, BiomassTiledCached, load_train_wide
 from csiro.train import run_groupkfold_cv
 
-BASE_ARGS_PATH = os.getenv("BASE_ARGS")
+BASE_ARGS_PATH = os.getenv("BASE_ARGS_PATH")
 
 def train_cv(
     *,
