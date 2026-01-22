@@ -191,7 +191,10 @@ def _build_model_from_state(
             model_kwargs["neck_ffn"] = bool(state.get("neck_ffn", DEFAULTS.get("neck_ffn", True)))
             if model_cls is TiledDINOv3RegressorStitched3:
                 model_kwargs["neck_pool"] = bool(state.get("neck_pool", DEFAULTS.get("neck_pool", False)))
-                model_kwargs["norm_bb_out"] = bool(state.get("norm_bb_out", DEFAULTS.get("norm_bb_out", False)))
+                model_kwargs["neck_layer_scale"] = state.get(
+                    "neck_layer_scale",
+                    DEFAULTS.get("neck_layer_scale", None),
+                )
     model = model_cls(**model_kwargs).to(device)
     model.model_name = model_name or ("tiled_base" if use_tiled else "base")
     _load_parts(model, state["parts"])
@@ -245,7 +248,7 @@ def train_one_fold(
     out_format: str | None = None,
     neck_rope: bool | None = None,
     neck_pool: bool | None = None,
-    norm_bb_out: bool | None = None,
+    neck_layer_scale: float | None = None,
     rope_rescale: float | None = None,
     neck_drop: float | None = None,
     drop_path: dict[str, float] | None = None,
@@ -343,9 +346,9 @@ def train_one_fold(
             if neck_pool is None:
                 neck_pool = bool(DEFAULTS.get("neck_pool", False))
             model_kwargs["neck_pool"] = bool(neck_pool)
-            if norm_bb_out is None:
-                norm_bb_out = bool(DEFAULTS.get("norm_bb_out", False))
-            model_kwargs["norm_bb_out"] = bool(norm_bb_out)
+            if neck_layer_scale is None:
+                neck_layer_scale = DEFAULTS.get("neck_layer_scale", None)
+            model_kwargs["neck_layer_scale"] = neck_layer_scale
         if rope_rescale is None:
             rope_rescale = DEFAULTS.get("rope_rescale", None)
         model_kwargs["rope_rescale"] = rope_rescale
@@ -1027,7 +1030,7 @@ def run_groupkfold_cv(
                         rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
                         neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
-                        norm_bb_out=bool(train_kwargs.get("norm_bb_out", DEFAULTS.get("norm_bb_out", False))),
+                        neck_layer_scale=train_kwargs.get("neck_layer_scale", DEFAULTS.get("neck_layer_scale", None)),
                         neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
@@ -1065,7 +1068,7 @@ def run_groupkfold_cv(
                         rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                         neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
                         neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
-                        norm_bb_out=bool(train_kwargs.get("norm_bb_out", DEFAULTS.get("norm_bb_out", False))),
+                        neck_layer_scale=train_kwargs.get("neck_layer_scale", DEFAULTS.get("neck_layer_scale", None)),
                         neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                         drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
                         backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
