@@ -22,6 +22,8 @@ from csiro.config import (
 from csiro.data import BiomassBaseCached, BiomassFullCached, BiomassTiledCached, load_train_wide
 from csiro.train import run_groupkfold_cv
 
+BASE_ARGS_PATH = os.getenv("BASE_ARGS")
+
 def train_cv(
     *,
     csv: str | None = None,
@@ -168,5 +170,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--overrides", type=str, default="")
     args = parser.parse_args()
-    overrides_path = args.overrides.strip() or None
-    train_cv(overrides=overrides_path)
+    overrides_path = args.overrides.strip()
+    run_args = _load_overrides(overrides_path) if overrides_path else None
+
+    if BASE_ARGS_PATH:
+        overrides = _load_overrides(BASE_ARGS_PATH) or {}
+        if run_args:
+            overrides.update(run_args)
+    else:
+        overrides = run_args
+
+    train_cv(overrides=overrides)
