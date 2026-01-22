@@ -27,6 +27,7 @@ DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
 DEFAULT_DINO_ROOT: str = str(_REPO_ROOT / "_dinov3")
 DINO_B_WEIGHTS_PATH: str | None = os.getenv("DINO_B_WEIGHTS_PATH")
 DINO_L_WEIGHTS_PATH: str | None = os.getenv("DINO_L_WEIGHTS_PATH")
+DINO_L_PLUS_WEIGHTS_PATH: str | None = os.getenv("DINO_L_PLUS_WEIGHTS_PATH")
 
 
 
@@ -36,6 +37,8 @@ def dino_weights_path_from_size(backbone_size: str) -> str | None:
         return DINO_B_WEIGHTS_PATH
     if s == "l":
         return DINO_L_WEIGHTS_PATH
+    if s == "l+":
+        return DINO_L_PLUS_WEIGHTS_PATH
     raise ValueError(f"Unknown backbone_size: {backbone_size}")
 
 
@@ -43,7 +46,7 @@ def neck_num_heads_for(backbone_size: str) -> int:
     s = str(backbone_size).strip().lower()
     if s == "b":
         return 12
-    if s == "l":
+    if s in ("l", "l+"):
         return 16
     raise ValueError(f"Unknown backbone_size: {backbone_size}")
     
@@ -113,7 +116,8 @@ def default_num_workers(reserve: int = 3) -> int:
 
 
 def dino_hub_name(*, model_size: str, plus: str) -> str:
-    return f"dinov3_vit{model_size}16{plus.replace('_', '')}"
+    plus = "plus" if "+" in model_size else ""
+    return f"dinov3_vit{model_size}16{plus}"
 
 
 def parse_dtype(dtype: str):

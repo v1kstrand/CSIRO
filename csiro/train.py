@@ -579,7 +579,7 @@ def train_one_fold(
 
         s1 = (
             f"Best score: {best_score:.4f} | Patience: {patience:02d}/{int(early_stopping):02d} | "
-            f"try={attempt_idx}/{attempt_max} | lr: {lr:6.4f}"
+            f"try={attempt_idx} | lr: {lr:6.4f}"
         )
         if score is None:
             s2 = (
@@ -1172,7 +1172,7 @@ def run_groupkfold_cv(
         if fold_scores:
             last_fold = int(min(len(fold_scores), total_folds) - 1)
             _save_cv_state(len(fold_scores) >= total_folds, last_fold, int(n_models) - 1)
-    except Exception:  # pragma: no cover
+    except Exception: 
         if comet_exp is not None:
             comet_exp.end()
             comet_ended = True
