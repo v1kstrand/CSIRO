@@ -478,10 +478,10 @@ class TiledDINOv3RegressorStitched3(nn.Module):
 
         tokens = torch.cat([cls1, cls2, regs1, regs2, tok_grid], dim=1)
 
-        rope_neck = self.backbone.rope_embed(H=int(rope_h), W=int(rope_w)) if self.neck_rope else None
-        
         if rope_neck is not None and self.rope_rescale is not None:
-            rope_neck.rescale_coords = self.rope_rescale
+            self.backbone.rope_embed.rescale_coords = self.rope_rescale
+            
+        rope_neck = self.backbone.rope_embed(H=int(rope_h), W=int(rope_w)) if self.neck_rope else None
         for block in self.neck:
             try:
                 tokens = block(tokens, rope_neck)
