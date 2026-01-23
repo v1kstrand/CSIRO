@@ -14,6 +14,7 @@ export COMET_DISABLE_AUTO_LOGGING=1
 #export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 export TORCHINDUCTOR_AUTOGRAD_CACHE=1
 export TRITON_PRINT_AUTOTUNING=1
+export BASE_ARGS_PATH="/notebooks/setups/configs/base.yaml"
 
 export DEFAULT_DATA_ROOT="/notebooks/kaggle/csiro"
 export DINO_B_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"

@@ -61,7 +61,7 @@ def train_cv(
     if not run_name:
         raise ValueError("run_name must be set (used for artifact naming).")
     exp_name = str(cfg.get("comet_exp_name", "")).strip() 
-    if exp_name:
+    if exp_name and not run_name.startswith(exp_name):
         run_name = f"{exp_name}_{run_name}"
     cfg["run_name"] = run_name
     save_output_dir = cfg.get("save_output_dir", None)
