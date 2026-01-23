@@ -701,15 +701,20 @@ class FullDINOv3RegressorRect3(nn.Module):
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 4:
             raise ValueError(f"Expected input [B,C,H,W], got {tuple(x.shape)}")
+        self.backbone.rope_embed.rescale_coords = None
         with torch.set_grad_enabled(self.backbone_grad):
             with autocast_context(x.device, dtype=self.backbone_dtype):
-                tokens, rope = _backbone_tokens(self.backbone, x)
+                tokens, _ = _backbone_tokens(self.backbone, x)
 
+            
         if self.neck_rope and self.rope_rescale is not None:
             self.backbone.rope_embed.rescale_coords = self.rope_rescale
-        rope_neck = rope if self.neck_rope else None
-        if self.neck_rope and self.rope_rescale is not None:
-            self.backbone.rope_embed.rescale_coords = None
+            
+        patch_h, patch_w = self.backbone.patch_embed.patch_size
+        rope_h = int(x.shape[2]) // int(patch_h)
+        rope_w = int(x.shape[3]) // int(patch_w)
+        rope_neck = self.backbone.rope_embed(H=int(rope_h), W=int(rope_w)) if self.neck_rope else None
+            
         for block in self.neck:
             try:
                 tokens = block(tokens, rope_neck)
