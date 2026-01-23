@@ -1000,14 +1000,14 @@ def run_groupkfold_cv(
                             f"NaN validation score at fold={int(fold_idx)} model={int(model_idx)} "
                             f"(attempt={int(attempts)})."
                         )
-                    if score > best_attempt_score:
+                    if best_attempt is None or score > best_attempt_score:
                         best_attempt = result
                         best_attempt_score = score
                     if score >= float(val_min_score):
                         break
                 if best_attempt is None:
                     raise ValueError(
-                        f"No valid attempt for fold={int(fold_idx)} model={int(model_idx)} "
+                        f"No attempts produced a valid score for fold={int(fold_idx)} model={int(model_idx)} "
                         f"(val_num_retry={int(val_num_retry)})."
                     )
                 result = best_attempt

@@ -311,6 +311,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.neck_pool = bool(neck_pool)
         self.num_regs = backbone.n_storage_tokens + 1 
         neck_drop = float(neck_drop)
+        assert rope_rescale is None or 1 <= rope_rescale <= 2
         if not 0 <=neck_drop <= 1:
             raise ValueError(f"neck_drop must be in [0,1] (got {neck_drop}).")
         if drop_path is not None:
@@ -321,11 +322,11 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         feat_dim = feat_dim or _infer_feat_dim(backbone)
         for p in self.backbone.parameters():
             p.requires_grad_(False)
-        if drop_path is not None and drop_path["backbone"] > 0.0:
-            for i in range(len(self.backbone.blocks)):
-                self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
-        
-        assert rope_rescale is None or 1 <= rope_rescale <= 2
+        bb_dp = drop_path["backbone"] if drop_path is not None else 0.0
+        for i in range(len(self.backbone.blocks)):
+            self.backbone.blocks[i].sample_drop_ratio = bb_dp
+            
+        self.backbone.rope_embed.rescale_coords = None
         self.rope_rescale = rope_rescale
 
         self.feat_dim = int(feat_dim)
@@ -435,6 +436,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         return torch.cat([green, clover, dead, gdm, total], dim=1)
 
     def _encode(self, x: torch.Tensor, *, return_patches: bool = False):
+        self.backbone.rope_embed.rescale_coords = None
         if x.ndim != 5 or x.size(1) != 2:
             raise ValueError(f"Expected tiled input [B,2,C,H,W], got {tuple(x.shape)}")
         x_left = x[:, 0]
