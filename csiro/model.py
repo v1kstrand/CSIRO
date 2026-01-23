@@ -599,7 +599,8 @@ class FullDINOv3RegressorRect3(nn.Module):
                 self.backbone.blocks[i].sample_drop_ratio = drop_path["backbone"]
 
         assert rope_rescale is None or 1 <= rope_rescale <= 2
-        backbone.rope_embed.rescale_coords = rope_rescale
+        backbone.rope_embed.rescale_coords = None
+        self.rope_rescale = rope_rescale
 
         self.feat_dim = int(feat_dim)
         norm_layer = nn.LayerNorm if norm_layer is None else norm_layer
@@ -704,7 +705,11 @@ class FullDINOv3RegressorRect3(nn.Module):
             with autocast_context(x.device, dtype=self.backbone_dtype):
                 tokens, rope = _backbone_tokens(self.backbone, x)
 
+        if self.neck_rope and self.rope_rescale is not None:
+            self.backbone.rope_embed.rescale_coords = self.rope_rescale
         rope_neck = rope if self.neck_rope else None
+        if self.neck_rope and self.rope_rescale is not None:
+            self.backbone.rope_embed.rescale_coords = None
         for block in self.neck:
             try:
                 tokens = block(tokens, rope_neck)

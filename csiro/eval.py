@@ -5,7 +5,8 @@ from pathlib import Path
 import glob
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 from .amp import autocast_context
 from .config import DEFAULTS, TARGETS, default_num_workers, parse_dtype, neck_num_heads_for
@@ -16,6 +17,7 @@ from .ensemble_utils import (
     _get_tta_n,
     _split_tta_batch,
 )
+from .metrics import eval_global_wr2
 from .model import (
     TiledDINOv3Regressor,
     TiledDINOv3Regressor3,
@@ -373,6 +375,164 @@ def predict_ensemble(
         preds = _agg_stack(preds_runs, outer_agg)
         return _postprocess_mass_balance(preds)
     raise ValueError(f"Unknown outer_agg: {outer_agg}")
+
+
+def _make_cv_iter(wide_df, cv_cfg: int | None) -> list[tuple[Any, Any]]:
+    if cv_cfg is None:
+        cv_cfg = int(DEFAULTS.get("cv_cfg", 1))
+    cv_cfg = int(cv_cfg)
+    groups = wide_df["Sampling_Date"].values
+    if cv_cfg == 1:
+        gkf = GroupKFold(n_splits=5, shuffle=True, random_state=126015)
+        return list(gkf.split(wide_df, groups=groups))
+    if cv_cfg == 2:
+        sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=82947501)
+        strat = wide_df["State"].astype(str).values
+        return list(sgkf.split(wide_df, y=strat, groups=groups))
+    raise ValueError(f"Unsupported cv_cfg: {cv_cfg}")
+
+
+def eval_fold_ensemble_from_pt(
+    *,
+    pt_path: str,
+    fold_idx: int,
+    dataset,
+    backbone,
+    wide_df=None,
+    va_idx=None,
+    cv_cfg: int | None = None,
+    batch_size: int = 128,
+    num_workers: int | None = None,
+    device: str | torch.device = "cuda",
+    backbone_dtype: str | torch.dtype | None = None,
+    trainable_dtype: str | torch.dtype | None = None,
+    tta_agg: str = "mean",
+    inner_agg: str = "mean",
+    k_weights: int = 0,
+    tiled_inp: bool | None = None,
+) -> list[dict[str, Any]]:
+    states = load_states_from_pt(pt_path)
+    runs = _normalize_runs(states)
+    if not runs:
+        raise ValueError("No runs found in checkpoint.")
+
+    if va_idx is None:
+        if wide_df is None:
+            raise ValueError("Provide wide_df or va_idx.")
+        cv_iter = _make_cv_iter(wide_df, cv_cfg)
+        for i, (_, v_idx) in enumerate(cv_iter):
+            if int(i) == int(fold_idx):
+                va_idx = v_idx
+                break
+        if va_idx is None:
+            raise ValueError(f"Fold {fold_idx} not found in CV iterator.")
+
+    num_workers = default_num_workers() if num_workers is None else int(num_workers)
+    tta_n = _get_tta_n(dataset)
+    tile_n = 2 if tiled_inp is True else 1
+    if tiled_inp is None and runs and runs[0]:
+        tile_n = 2 if bool(runs[0][0].get("tiled_inp", False)) else 1
+    bs_eff = max(1, int(batch_size) // int(tile_n * max(1, tta_n)))
+
+    subset = Subset(dataset, va_idx)
+    dl = DataLoader(
+        subset,
+        shuffle=False,
+        batch_size=int(bs_eff),
+        pin_memory=str(device).startswith("cuda"),
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
+    )
+
+    if backbone_dtype is None:
+        backbone_dtype = DEFAULTS["backbone_dtype"]
+    if isinstance(backbone_dtype, str):
+        backbone_dtype = parse_dtype(backbone_dtype)
+    if trainable_dtype is None:
+        trainable_dtype = DEFAULTS["trainable_dtype"]
+    if isinstance(trainable_dtype, str):
+        trainable_dtype = parse_dtype(trainable_dtype)
+
+    loss_weights = DEFAULTS.get("loss_weights", (1.0, 1.0, 1.0, 0.0, 0.0))
+    w_vec = torch.as_tensor(loss_weights, dtype=torch.float32)
+
+    def _eval_ensemble(models: list[torch.nn.Module]) -> float:
+        for model in models:
+            model.eval()
+        w5 = w_vec.to(device).view(1, -1)
+        ss_res = torch.zeros((), device=device)
+        sum_w = torch.zeros((), device=device)
+        sum_wy = torch.zeros((), device=device)
+        sum_wy2 = torch.zeros((), device=device)
+        ctx = autocast_context(device, dtype=trainable_dtype)
+        for batch in dl:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                x, y_log = batch[0], batch[1]
+            else:
+                raise ValueError("Validation loader must yield (x, y_log).")
+            x = x.to(device, non_blocking=True)
+            y_log = y_log.to(device, non_blocking=True)
+
+            preds_models: list[torch.Tensor] = []
+            for model in models:
+                with torch.no_grad(), ctx:
+                    if tile_n == 2:
+                        if x.ndim != 5:
+                            raise ValueError(f"Expected tiled batch [B,2,C,H,W], got {tuple(x.shape)}")
+                        p_raw = model(x).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
+                        preds_models.append(p)
+                    elif x.ndim == 5:
+                        x_tta, t = _split_tta_batch(x)
+                        p_raw = model(x_tta).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
+                        p = p.view(x.size(0), int(t), -1)
+                        preds_models.append(_agg_tta(p, tta_agg))
+                    elif x.ndim == 4:
+                        p_raw = model(x).float()
+                        pred_space = getattr(model, "pred_space", "log")
+                        p = _pred_to_grams(p_raw, pred_space, clamp=True)
+                        preds_models.append(p)
+                    else:
+                        raise ValueError(f"Expected batch [B,C,H,W] or [B,T,C,H,W], got {tuple(x.shape)}")
+
+            p_ens = _agg_stack(preds_models, inner_agg)
+            p_ens = _postprocess_mass_balance(p_ens)
+            y = torch.expm1(y_log.float())
+            diff = y - p_ens
+            w = w5.expand_as(y)
+            ss_res += (w * diff * diff).sum()
+            sum_w += w.sum()
+            sum_wy += (w * y).sum()
+            sum_wy2 += (w * y * y).sum()
+
+        mu = sum_wy / (sum_w + 1e-12)
+        ss_tot = sum_wy2 - sum_w * mu * mu
+        return float((1.0 - ss_res / (ss_tot + 1e-12)).item())
+
+    results: list[dict[str, Any]] = []
+    for run_idx, run in enumerate(runs):
+        fold_states = [s for s in run if int(s.get("fold_idx", -1)) == int(fold_idx)]
+        if not fold_states:
+            raise ValueError(f"Missing fold {fold_idx} in checkpoint states.")
+        if int(k_weights) > 0:
+            fold_states = [_resolve_kweights_state(s, int(k_weights)) for s in fold_states]
+        models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in fold_states]
+        per_model_scores = [float(eval_global_wr2(m, dl, w_vec, device=device)) for m in models]
+        ens_score = _eval_ensemble(models)
+        results.append(
+            dict(
+                run_idx=int(run_idx),
+                fold_idx=int(fold_idx),
+                n_models=int(len(models)),
+                per_model_scores=per_model_scores,
+                ensemble_score=float(ens_score),
+            )
+        )
+
+    return results
 
 
 def predict_ensemble_tiled(
