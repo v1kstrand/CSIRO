@@ -929,6 +929,8 @@ def run_groupkfold_cv(
             model_states: list[dict[str, Any]] = []
             model_states_best: list[dict[str, Any]] = []
             if int(fold_idx) < len(fold_states):
+                model_states_best = list(fold_states[int(fold_idx)])
+            if int(fold_idx) < len(fold_states):
                 model_states = list(fold_states[int(fold_idx)])
             if int(fold_idx) < len(fold_model_scores):
                 model_scores = list(fold_model_scores[int(fold_idx)])
