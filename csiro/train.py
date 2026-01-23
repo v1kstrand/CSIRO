@@ -915,7 +915,9 @@ def run_groupkfold_cv(
     try:
         exp_name = safe_name
         if comet_exp is not None:
-            exp_name = comet_exp_name + "_" + exp_name
+            if comet_exp_name:
+                prefix = str(comet_exp_name).strip()
+                exp_name = exp_name if exp_name.startswith(prefix) else f"{prefix}_{exp_name}"
             comet_exp.set_name(exp_name)
 
         for fold_idx, (tr_idx, va_idx) in enumerate(cv_iter):
