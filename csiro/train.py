@@ -907,6 +907,7 @@ def run_groupkfold_cv(
                 fold_model_scores=fold_model_scores,
                 states=fold_states,
                 exp_key=exp_key,
+                run_name_resolved=str(run_name),
             ),
             cv_state_path,
         )

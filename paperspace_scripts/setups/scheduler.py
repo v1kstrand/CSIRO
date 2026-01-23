@@ -10,7 +10,7 @@ from schedule_utils import deep_merge, load_yaml, resolve_path
 
 
 DEFAULT_SCHEDULE = Path(__file__).with_name("schedule.yaml")
-EXP_NAME_RE = re.compile(r"^exp(\d+)$")
+EXP_NAME_RE = re.compile(r"^exp(\d+)")
 
 
 def _log(message: str) -> None:
@@ -24,6 +24,7 @@ def _load_schedule(path: Path) -> dict:
     experiments_dir = resolve_path(base_dir, schedule.get("experiments_dir", "configs/experiments"))
     ongoing_dir = resolve_path(base_dir, schedule.get("ongoing_dir", "configs/ongoing"))
     completed_dir = resolve_path(base_dir, schedule.get("completed_dir", "configs/completed"))
+    skipped_dir = resolve_path(base_dir, schedule.get("skipped_dir", "configs/skipped"))
     base_config = resolve_path(base_dir, schedule.get("base_config", "configs/base.yaml"))
     max_runs = int(schedule.get("max_runs", 1))
     return dict(
@@ -32,17 +33,24 @@ def _load_schedule(path: Path) -> dict:
         experiments_dir=experiments_dir,
         ongoing_dir=ongoing_dir,
         completed_dir=completed_dir,
+        skipped_dir=skipped_dir,
         base_config=base_config,
         max_runs=max_runs,
     )
 
 
-def _parse_exp_index(name: str) -> int | None:
+def _parse_exp_index(name: str) -> tuple[int | None, str | None]:
     stem = Path(name).stem
+    if not stem.startswith("exp"):
+        return None, "name must start with 'exp'"
     match = EXP_NAME_RE.match(stem)
     if not match:
-        return None
-    return int(match.group(1))
+        return None, "missing experiment index"
+    idx = int(match.group(1))
+    suffix = stem[len(match.group(0)) :]
+    if suffix and not suffix.startswith("_"):
+        return None, "suffix must start with '_'"
+    return idx, None
 
 
 def _scan_configs(config_dir: Path | None) -> list[str]:
@@ -52,8 +60,9 @@ def _scan_configs(config_dir: Path | None) -> list[str]:
     paths.extend(sorted(config_dir.glob("*.yml")))
     items: list[tuple[int, str]] = []
     for path in paths:
-        idx = _parse_exp_index(path.name)
+        idx, err = _parse_exp_index(path.name)
         if idx is None:
+            _log(f"skip {path.name}: {err}")
             continue
         items.append((idx, path.name))
     items.sort(key=lambda item: (item[0], item[1]))
@@ -64,6 +73,21 @@ def _load_config(base_config: Path | None, override_path: Path) -> dict:
     base_cfg = load_yaml(base_config) if base_config else {}
     override_cfg = load_yaml(override_path)
     return deep_merge(base_cfg, override_cfg)
+
+
+def _resolve_run_name_with_comet(
+    base_config: Path | None,
+    override_path: Path,
+    *,
+    config_id: str,
+) -> str:
+    override_cfg = load_yaml(override_path)
+    base_cfg = load_yaml(base_config) if base_config else {}
+    run_name = str(override_cfg.get("run_name", "")).strip() or str(base_cfg.get("run_name", "")).strip()
+    exp_name = str(override_cfg.get("comet_exp_name", "")).strip() or str(base_cfg.get("comet_exp_name", "")).strip()
+    if not run_name or not exp_name:
+        raise ValueError(f"run_name and comet_exp_name required for {config_id}")
+    return f"{exp_name}_{run_name}"
 
 
 def _resolve_run_name(config: dict, config_id: str) -> str:
@@ -101,19 +125,39 @@ def _move_to_completed(config_path: Path, completed_dir: Path) -> None:
     config_path.replace(dest)
 
 
+def _move_to_skipped(config_path: Path, skipped_dir: Path) -> None:
+    if not config_path.exists():
+        return
+    skipped_dir.mkdir(parents=True, exist_ok=True)
+    dest = skipped_dir / config_path.name
+    if dest.exists():
+        idx = 1
+        while True:
+            candidate = skipped_dir / f"dup{idx}_{config_path.name}"
+            if not candidate.exists():
+                dest = candidate
+                break
+            idx += 1
+    config_path.replace(dest)
+
+
 def _cleanup_ongoing(schedule: dict) -> list[str]:
     output_dir = schedule["output_dir"]
     ongoing_dir = schedule["ongoing_dir"]
     completed_dir = schedule["completed_dir"]
+    skipped_dir = schedule["skipped_dir"]
     ongoing = []
     for config_name in _scan_configs(ongoing_dir):
         config_path = ongoing_dir / config_name
         try:
-            cfg = _load_config(schedule["base_config"], config_path)
-            run_name = _resolve_run_name(cfg, config_name)
+            run_name = _resolve_run_name_with_comet(
+                schedule["base_config"],
+                config_path,
+                config_id=config_name,
+            )
         except Exception as exc:
-            _log(f"keep {config_name}: {exc}")
-            ongoing.append(config_name)
+            _log(f"skip {config_name}: {exc}")
+            _move_to_skipped(config_path, skipped_dir)
             continue
         paths = _model_paths(output_dir, run_name)
         if paths["final"].exists():
@@ -132,6 +176,7 @@ def _select_next(schedule: dict) -> list[str]:
     experiments_dir = schedule["experiments_dir"]
     ongoing_dir = schedule["ongoing_dir"]
     completed_dir = schedule["completed_dir"]
+    skipped_dir = schedule["skipped_dir"]
     max_runs = schedule["max_runs"]
 
     if ongoing_dir is not None:
@@ -148,10 +193,14 @@ def _select_next(schedule: dict) -> list[str]:
             continue
         config_path = experiments_dir / config_name
         try:
-            cfg = _load_config(schedule["base_config"], config_path)
-            run_name = _resolve_run_name(cfg, config_name)
+            run_name = _resolve_run_name_with_comet(
+                schedule["base_config"],
+                config_path,
+                config_id=config_name,
+            )
         except Exception as exc:
             _log(f"skip {config_name}: {exc}")
+            _move_to_skipped(config_path, skipped_dir)
             continue
         paths = _model_paths(output_dir, run_name)
         if paths["final"].exists():

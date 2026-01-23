@@ -6,7 +6,11 @@ import sys
 import time
 from pathlib import Path
 
+import re
+
 from schedule_utils import deep_merge, load_yaml, resolve_path
+
+EXP_NAME_RE = re.compile(r"^exp(\d+)")
 
 
 DEFAULT_SCHEDULE = Path(__file__).with_name("schedule.yaml")
@@ -49,6 +53,30 @@ def _load_config(schedule: dict, config_path: Path) -> dict:
     return deep_merge(base_cfg, override_cfg)
 
 
+def _parse_exp_index(name: str) -> tuple[int | None, str | None]:
+    stem = Path(name).stem
+    if not stem.startswith("exp"):
+        return None, "name must start with 'exp'"
+    match = EXP_NAME_RE.match(stem)
+    if not match:
+        return None, "missing experiment index"
+    idx = int(match.group(1))
+    suffix = stem[len(match.group(0)) :]
+    if suffix and not suffix.startswith("_"):
+        return None, "suffix must start with '_'"
+    return idx, None
+
+
+def _resolve_run_name_with_comet(base_config: Path | None, override_path: Path) -> str:
+    override_cfg = load_yaml(override_path)
+    base_cfg = load_yaml(base_config) if base_config else {}
+    run_name = str(override_cfg.get("run_name", "")).strip() or str(base_cfg.get("run_name", "")).strip()
+    exp_name = str(override_cfg.get("comet_exp_name", "")).strip() or str(base_cfg.get("comet_exp_name", "")).strip()
+    if not run_name or not exp_name:
+        raise ValueError("run_name and comet_exp_name required for config")
+    return f"{exp_name}_{run_name}"
+
+
 def _resolve_run_name(config: dict, config_id: str) -> str:
     run_name = str(config.get("run_name", "")).strip()
     model_name = str(config.get("model_name", "")).strip()
@@ -80,8 +108,12 @@ def main() -> int:
 
     config_id = args.config_id
     config_path = _resolve_config_path(schedule, config_id)
+    _, err = _parse_exp_index(config_path.name)
+    if err:
+        raise ValueError(f"invalid config name {config_path.name}: {err}")
+
     config = _load_config(schedule, config_path)
-    run_name = _resolve_run_name(config, config_id)
+    run_name = _resolve_run_name_with_comet(schedule["base_config"], config_path)
     paths = _model_paths(output_dir, run_name)
     if paths["final"].exists():
         print(f"[quick_launch] {config_id} already completed; skipping.")

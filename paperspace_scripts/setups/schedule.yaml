@@ -4,4 +4,5 @@ base_config: configs/base.yaml
 experiments_dir: configs/experiments
 ongoing_dir: configs/ongoing
 completed_dir: configs/completed
+skipped_dir: configs/skipped
 max_runs: 2

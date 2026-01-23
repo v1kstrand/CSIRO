@@ -60,6 +60,10 @@ def train_cv(
     run_name = str(cfg.get("run_name", "")).strip()
     if not run_name:
         raise ValueError("run_name must be set (used for artifact naming).")
+    exp_name = str(cfg.get("comet_exp_name", "")).strip() 
+    if exp_name:
+        run_name = f"{exp_name}_{run_name}"
+    cfg["run_name"] = run_name
     save_output_dir = cfg.get("save_output_dir", None)
     if save_output_dir:
         state_dir = os.path.join(str(save_output_dir), "states")
@@ -74,6 +78,7 @@ def train_cv(
                     fold_scores=[],
                     fold_model_scores=[],
                     states=[],
+                    run_name_resolved=str(run_name),
                 ),
                 state_path,
             )
