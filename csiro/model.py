@@ -489,7 +489,6 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 else:
                     assert False, "SelfAttentionBlock requires rope"
         tokens = self.norm_neck(tokens)
-        patch_tokens = tokens[:, int(2 * self.num_regs) :, :]
 
         if self.out_format == "mean":
             feats = tokens.mean(dim=1)
@@ -504,6 +503,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             raise ValueError(f"Unknown out_format: {self.out_format}")
 
         if return_patches:
+            patch_tokens = tokens[:, int(2 * self.num_regs) :, :]
             return feats, patch_tokens
         return feats
 
@@ -571,6 +571,7 @@ class FullDINOv3RegressorRect3(nn.Module):
         drop_path: dict[str, float] | None = None,
         rope_rescale=None,
         neck_ffn: bool = True,
+        neck_layer_scale=None,
     ):
         super().__init__()
         head_style = str(head_style).strip().lower()
