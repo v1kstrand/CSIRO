@@ -102,7 +102,7 @@ def set_optimizer_lr(opt, lr: float) -> None:
 
 def _trainable_blocks(m: torch.nn.Module) -> list[torch.nn.Module]:
     parts: list[torch.nn.Module] = []
-    for name in ("neck", "head", "patch_head", "norm"):
+    for name in ("neck", "head", "clover_head", "norm"):
         part = getattr(m, name, None)
         if part is not None:
             parts.append(part)
@@ -120,7 +120,7 @@ def _trainable_params_list(m: torch.nn.Module) -> list[torch.nn.Parameter]:
 
 def _save_parts(m: torch.nn.Module) -> dict[str, dict[str, torch.Tensor]]:
     state: dict[str, dict[str, torch.Tensor]] = {}
-    for name in ("neck", "head", "patch_head", "norm"):
+    for name in ("neck", "head", "clover_head", "norm"):
         part = getattr(m, name, None)
         if part is not None:
             state[name] = {k: v.detach().cpu() for k, v in part.state_dict().items()}
@@ -128,7 +128,7 @@ def _save_parts(m: torch.nn.Module) -> dict[str, dict[str, torch.Tensor]]:
 
 
 def _load_parts(m: torch.nn.Module, state: dict[str, dict[str, torch.Tensor]]) -> None:
-    for name in ("neck", "head", "patch_head", "norm"):
+    for name in ("neck", "head", "clover_head", "norm"):
         part = getattr(m, name, None)
         if part is not None and name in state:
             part.load_state_dict(state[name], strict=True)
@@ -244,7 +244,7 @@ def train_one_fold(
     loss_weights: list[float] | tuple[float, ...] | None = None,
     huber_beta: float | None = None,
     tau_neg: float | None = None,
-    tau_patch: float | None = None,
+    tau_clover: float | None = None,
     out_format: str | None = None,
     neck_rope: bool | None = None,
     neck_pool: bool | None = None,
@@ -381,16 +381,12 @@ def train_one_fold(
     if float(tau_neg) > 0.0:
         neg_criterion = NegativityPenaltyLoss(tau_neg=float(tau_neg), pred_space=pred_space).to(device)
 
-    if tau_patch is None:
-        tau_patch = float(DEFAULTS.get("tau_patch", 0.0))
-    tau_patch = float(tau_patch)
-    use_patch_aux = (
-        tau_patch > 0.0
-        and pred_space == "log"
-        and isinstance(model, TiledDINOv3RegressorStitched3)
-    )
-    if use_patch_aux and str(getattr(model, "head_style", "single")).strip().lower() != "single":
-        raise ValueError("patch aux is only supported for head_style='single'.")
+    if tau_clover is None:
+        tau_clover = float(DEFAULTS.get("tau_clover", 0.0))
+    tau_clover = float(tau_clover)
+    use_clover_aux = tau_clover > 0.0
+    if use_clover_aux and getattr(model, "clover_head", None) is None:
+        raise ValueError("clover aux requires model.clover_head to be defined.")
     
     trainable_params = _trainable_params_list(model)
     
@@ -441,13 +437,14 @@ def train_one_fold(
 
         model.train()
         running = 0.0
-        running_patch = 0.0
+        running_clover = 0.0
         n_seen = 0
 
         for bi, (x, y_log) in enumerate(dl_tr):
             x = x.to(device, non_blocking=True)
             y_log = y_log.to(device, non_blocking=True)
             y_target = y_log
+            clover_target = (y_log[:, [_IDX_CLOVER]] > 0).float()
             if pred_space == "gram":
                 y_target = torch.expm1(y_log.float())
             if mixup_p > 0.0 and mixup_alpha > 0.0 and int(x.size(0)) > 1:
@@ -467,6 +464,11 @@ def train_one_fold(
                         x = x * w1.view(w_shape) + x2 * w2.view(w_shape) + x3 * w3.view(w_shape)
 
                         w_y = weights.view(bs, 3)
+                        c2 = clover_target[perm1]
+                        c3 = clover_target[perm2]
+                        clover_target = (
+                            clover_target * w_y[:, [0]] + c2 * w_y[:, [1]] + c3 * w_y[:, [2]]
+                        )
                         if pred_space == "log":
                             y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
                             y2_lin = torch.expm1(y_log[perm1].float()).clamp_min(0.0)
@@ -486,6 +488,8 @@ def train_one_fold(
                         x = x * lam_x + x2 * (1.0 - lam_x)
 
                         lam_y = lam.view(bs, 1)
+                        c2 = clover_target[perm]
+                        clover_target = clover_target * lam_y + c2 * (1.0 - lam_y)
                         if pred_space == "log":
                             y_lin = torch.expm1(y_log.float()).clamp_min(0.0)
                             y2_lin = torch.expm1(y2.float()).clamp_min(0.0)
@@ -496,17 +500,18 @@ def train_one_fold(
 
             opt.zero_grad(set_to_none=True)
             with autocast_context(device, dtype=trainable_dtype):
-                if use_patch_aux:
-                    pred, patch_pred = model.forward_with_patch(x)
-                    loss_main = criterion(pred, y_target)
-                    y_patch = y_target[:, [3]]
-                    loss_patch = criterion(patch_pred, y_patch)
+                if use_clover_aux:
+                    pred, clover_logit = model.forward_with_clover(x)
                 else:
                     pred = model(x)
-                    loss_main = criterion(pred, y_target)
+                    clover_logit = None
+                loss_main = criterion(pred, y_target)
                 loss = loss_main
-                if use_patch_aux:
-                    loss = loss + (float(tau_patch) * loss_patch)
+                if use_clover_aux:
+                    loss_clover = torch.nn.functional.binary_cross_entropy_with_logits(
+                        clover_logit.float(), clover_target
+                    )
+                    loss = loss + (float(tau_clover) * loss_clover)
                 if neg_criterion is not None:
                     loss = loss + neg_criterion(pred)
 
@@ -525,12 +530,12 @@ def train_one_fold(
 
             bs = int(x.size(0))
             running += float(loss_main.detach().item()) * bs
-            if use_patch_aux:
-                running_patch += float(loss_patch.detach().item()) * bs
+            if use_clover_aux:
+                running_clover += float(loss_clover.detach().item()) * bs
             n_seen += bs
 
         train_loss = running / max(int(n_seen), 1)
-        train_patch = running_patch / max(int(n_seen), 1) if use_patch_aux else None
+        train_clover = running_clover / max(int(n_seen), 1) if use_clover_aux else None
         do_eval = (val_freq == 1) or (int(ep) and int(ep) % int(val_freq) == 0)
         if int(ep) <= int(warmup_epochs):
             do_eval = False
@@ -564,8 +569,8 @@ def train_one_fold(
 
         if comet_exp is not None and int(ep) > int(skip_log_first_n):
             p = {f"x_train_loss_cv{curr_fold}_m{model_idx}": float(train_loss)}
-            if train_patch is not None:
-                p[f"x_train_patch_cv{curr_fold}_m{model_idx}"] = float(train_patch)
+            if train_clover is not None:
+                p[f"x_train_clover_cv{curr_fold}_m{model_idx}"] = float(train_clover)
             if score is not None:
                 p[f"x_val_wR2_cv{curr_fold}_m{model_idx}"] = float(score)
             comet_exp.log_metrics(p, step=int(ep))

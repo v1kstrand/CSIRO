@@ -388,7 +388,14 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 norm_layer=norm_layer,
             )
             self.head = nn.ModuleList([self.head_green, self.head_clover, self.head_dead])
-            self.patch_head = None
+            self.clover_head = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=1,
+                norm_layer=norm_layer,
+            )
         else:
             self.head = _build_head(
                 in_dim=self.out_dim,
@@ -398,8 +405,8 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 out_dim=3,
                 norm_layer=norm_layer,
             )
-            self.patch_head = _build_head(
-                in_dim=self.feat_dim,
+            self.clover_head = _build_head(
+                in_dim=self.out_dim,
                 hidden=int(hidden),
                 depth=int(depth),
                 drop=float(drop),
@@ -512,20 +519,12 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         green, clover, dead = self._split_components(feats)
         return self._compose_outputs(green, clover, dead)
 
-    def forward_with_patch(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        feats, patch_tokens = self._encode(x, return_patches=True)
+    def forward_with_clover(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        feats = self._encode(x)
         green, clover, dead = self._split_components(feats)
         main_pred = self._compose_outputs(green, clover, dead)
-        if self.patch_head is None:
-            raise ValueError("patch_head is only supported for head_style='single'.")
-        if self.pred_space != "log":
-            raise ValueError("patch_head is only supported for pred_space='log'.")
-        bsz, n_patch, dim = patch_tokens.shape
-        patch_out = self.patch_head(patch_tokens.reshape(bsz * n_patch, dim)).reshape(bsz, n_patch, 1)
-        patch_lin = torch.expm1(patch_out.float()).clamp_min(0.0)
-        gdm_lin = patch_lin.sum(dim=1, keepdim=True).clamp_min(0.0)
-        patch_pred = torch.log1p(gdm_lin)
-        return main_pred, patch_pred
+        clover_logit = self.clover_head(feats)
+        return main_pred, clover_logit
 
     @torch.no_grad()
     def init(self) -> None:
@@ -534,8 +533,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
             modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
         else:
             modules += [*self.head.modules()]
-            if self.patch_head is not None:
-                modules += [*self.patch_head.modules()]
+        modules += [*self.clover_head.modules()]
         _init_modules(modules)
 
 
@@ -650,6 +648,14 @@ class FullDINOv3RegressorRect3(nn.Module):
                 norm_layer=norm_layer,
             )
             self.head = nn.ModuleList([self.head_green, self.head_clover, self.head_dead])
+            self.clover_head = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=1,
+                norm_layer=norm_layer,
+            )
         else:
             self.head = _build_head(
                 in_dim=self.out_dim,
@@ -657,6 +663,14 @@ class FullDINOv3RegressorRect3(nn.Module):
                 depth=int(depth),
                 drop=float(drop),
                 out_dim=3,
+                norm_layer=norm_layer,
+            )
+            self.clover_head = _build_head(
+                in_dim=self.out_dim,
+                hidden=int(hidden),
+                depth=int(depth),
+                drop=float(drop),
+                out_dim=1,
                 norm_layer=norm_layer,
             )
 
@@ -731,6 +745,13 @@ class FullDINOv3RegressorRect3(nn.Module):
         green, clover, dead = self._split_components(feats)
         return self._compose_outputs(green, clover, dead)
 
+    def forward_with_clover(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        feats = self._encode(x)
+        green, clover, dead = self._split_components(feats)
+        main_pred = self._compose_outputs(green, clover, dead)
+        clover_logit = self.clover_head(feats)
+        return main_pred, clover_logit
+
     def set_backbone_grad(self, train: bool = True) -> None:
         self.backbone_grad = bool(train)
 
@@ -741,6 +762,7 @@ class FullDINOv3RegressorRect3(nn.Module):
             modules += [*self.head_green.modules(), *self.head_clover.modules(), *self.head_dead.modules()]
         else:
             modules += [*self.head.modules()]
+        modules += [*self.clover_head.modules()]
         _init_modules(modules)
 
 
