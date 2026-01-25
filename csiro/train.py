@@ -771,6 +771,7 @@ def run_groupkfold_cv(
     hue_range = train_kwargs.pop("hue_range", DEFAULTS["hue_range"])
     cutout_p = float(train_kwargs.pop("cutout", DEFAULTS.get("cutout", 0.0)))
     to_gray_p = float(train_kwargs.pop("to_gray", DEFAULTS.get("to_gray", 0.0)))
+    blur_p = float(train_kwargs.pop("blur_p", DEFAULTS.get("blur_p", 0.0)))
     train_kwargs.pop("rdrop", None)
     val_bs_override = train_kwargs.pop("val_bs", DEFAULTS.get("val_bs", None))
     tiled_inp = bool(train_kwargs.pop("tiled_inp", DEFAULTS.get("tiled_inp", False)))
@@ -803,6 +804,13 @@ def run_groupkfold_cv(
         train_post_ops.append(T.RandomErasing(p=float(cutout_p)))
     if to_gray_p > 0.0:
         train_post_ops.append(T.RandomGrayscale(p=float(to_gray_p)))
+    if blur_p > 0.0:
+        train_post_ops.append(
+            T.RandomApply(
+                [T.GaussianBlur(kernel_size=3, sigma=(0.5, 1.5))],
+                p=float(blur_p),
+            )
+        )
     train_post = T.Compose(train_post_ops)
     use_shared_geom = tiled_inp and tile_geom_mode == "shared"
     img_size_use = int(img_size or DEFAULTS.get("img_size", 512))

@@ -92,6 +92,7 @@ DEFAULTS: dict[str, Any] = dict(
     val_freq=1,
     cutout=0.0,
     to_gray=0.0,
+    blur_p=0.0,
     mixup=dict(p=0.0, p3=0.0, alpha=0.2),
     val_bs=None,
     comet_exp_name="csiro",
