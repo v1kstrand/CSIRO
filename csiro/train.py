@@ -499,7 +499,8 @@ def train_one_fold(
                 if use_patch_aux:
                     pred, patch_pred = model.forward_with_patch(x)
                     loss_main = criterion(pred, y_target)
-                    loss_patch = criterion(patch_pred, y_target)
+                    y_patch = y_target[:, [3]]
+                    loss_patch = criterion(patch_pred, y_patch)
                 else:
                     pred = model(x)
                     loss_main = criterion(pred, y_target)

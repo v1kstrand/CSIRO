@@ -403,7 +403,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
                 hidden=int(hidden),
                 depth=int(depth),
                 drop=float(drop),
-                out_dim=3,
+                out_dim=1,
                 norm_layer=norm_layer,
             )
 
@@ -521,21 +521,10 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         if self.pred_space != "log":
             raise ValueError("patch_head is only supported for pred_space='log'.")
         bsz, n_patch, dim = patch_tokens.shape
-        patch_out = self.patch_head(patch_tokens.reshape(bsz * n_patch, dim)).reshape(bsz, n_patch, 3)
+        patch_out = self.patch_head(patch_tokens.reshape(bsz * n_patch, dim)).reshape(bsz, n_patch, 1)
         patch_lin = torch.expm1(patch_out.float()).clamp_min(0.0)
-        green_lin = patch_lin[:, :, 0].sum(dim=1, keepdim=True)
-        clover_lin = patch_lin[:, :, 1].sum(dim=1, keepdim=True)
-        dead_lin = patch_lin[:, :, 2].sum(dim=1, keepdim=True)
-        gdm_lin = green_lin + clover_lin
-        total_lin = gdm_lin + dead_lin
-        gdm_lin = gdm_lin.clamp_min(0.0)
-        total_lin = total_lin.clamp_min(0.0)
-        green_log = torch.log1p(green_lin)
-        clover_log = torch.log1p(clover_lin)
-        dead_log = torch.log1p(dead_lin)
-        gdm_log = torch.log1p(gdm_lin)
-        total_log = torch.log1p(total_lin)
-        patch_pred = torch.cat([green_log, clover_log, dead_log, gdm_log, total_log], dim=1)
+        gdm_lin = patch_lin.sum(dim=1, keepdim=True).clamp_min(0.0)
+        patch_pred = torch.log1p(gdm_lin)
         return main_pred, patch_pred
 
     @torch.no_grad()
