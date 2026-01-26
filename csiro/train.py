@@ -1144,7 +1144,9 @@ def run_groupkfold_cv(
                         )
                         _save_cv_state(False, int(fold_idx), int(model_idx))
                     if attempt_best >= float(val_min_score):
-                        if not val_retry_early_stop or int(attempt_idx) > 1:
+                        if int(attempt_idx) == 1:
+                            break
+                        if val_retry_early_stop:
                             break
                 if best_attempt is None:
                     raise ValueError(
