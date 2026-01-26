@@ -863,6 +863,8 @@ def run_groupkfold_cv(
             retrain_comet_key = str(retrain_fold_model[1]) if retrain_fold_model[1] else None
         retrain_pairs = [(int(f), int(m)) for f, m in retrain_pairs_in]
         retrain_active = len(retrain_pairs) > 0
+    if retrain_active:
+        print(f"INFO: retrain pairs={retrain_pairs} comet_key={'set' if retrain_comet_key else 'none'}")
     retrain_set = set(retrain_pairs)
 
     fold_scores: list[float] = []
