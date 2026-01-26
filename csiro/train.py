@@ -848,6 +848,7 @@ def run_groupkfold_cv(
     val_min_score = float(train_kwargs.get("val_min_score", DEFAULTS.get("val_min_score", 0.0)))
     val_num_retry = int(train_kwargs.get("val_num_retry", DEFAULTS.get("val_num_retry", 1)))
     val_num_retry = max(1, int(val_num_retry))
+    val_retry_early_stop = bool(train_kwargs.get("val_retry_early_stop", DEFAULTS.get("val_retry_early_stop", False)))
     retrain_fold_model = train_kwargs.pop("retrain_fold_model", DEFAULTS.get("retrain_fold_model", None))
     retrain_pairs: list[tuple[int, int]] = []
     retrain_comet_key: str | None = None
@@ -872,7 +873,11 @@ def run_groupkfold_cv(
     fold_states: list[list[dict[str, Any]]] = []
     start_fold = 0
     start_model = 0
+    resume_attempt: int | None = None
+    resume_best_attempt: dict[str, Any] | None = None
+    resume_best_score: float = -1e9
     state = None
+    retry_state: dict[str, Any] | None = None
     dep_path = None
 
     if retrain_active:
@@ -906,6 +911,7 @@ def run_groupkfold_cv(
             fold_scores[:] = [float(x) for x in state.get("fold_scores", [])]
             fold_model_scores[:] = [list(map(float, xs)) for xs in state.get("fold_model_scores", [])]
             fold_states[:] = list(state.get("states", []))
+            retry_state = state.get("retry_state")
             last_completed = state.get("last_completed_fold")
             last_completed_model = state.get("last_completed_model")
             if last_completed is None:
@@ -924,6 +930,15 @@ def run_groupkfold_cv(
             if start_model >= int(n_models):
                 start_fold += 1
                 start_model = 0
+            if isinstance(retry_state, dict):
+                resume_fold = int(retry_state.get("fold_idx", -1))
+                resume_model = int(retry_state.get("model_idx", -1))
+                if resume_fold >= 0 and resume_model >= 0:
+                    start_fold = resume_fold
+                    start_model = resume_model
+                    resume_attempt = int(retry_state.get("attempt_idx", 1))
+                    resume_best_attempt = retry_state.get("best_attempt_state")
+                    resume_best_score = float(retry_state.get("best_attempt_score", resume_best_score))
             print(f"INFO: Resuming from fold {start_fold}, model {start_model}")
 
     exp_key = comet_exp = None
@@ -967,6 +982,7 @@ def run_groupkfold_cv(
                 states=fold_states,
                 exp_key=exp_key,
                 run_name_resolved=str(run_name),
+                retry_state=retry_state,
             ),
             cv_state_path,
         )
@@ -1059,58 +1075,76 @@ def run_groupkfold_cv(
                     )
                 else:
                     ds_tr_view = TransformView(dataset, T.Compose([train_tfms, train_post]))
-                result = train_one_fold(
-                    ds_tr_view=ds_tr_view,
-                    ds_va_view=ds_va_view,
-                    tr_idx=tr_idx,
-                    va_idx=va_idx,
-                    fold_idx=int(fold_idx),
-                    comet_exp=comet_exp,
-                    curr_fold=int(fold_idx),
-                    model_idx=int(model_idx),
-                    return_state=True,
-                    **inp_train_kwargs,
+                resume_this = (
+                    (not retrain_active)
+                    and resume_attempt is not None
+                    and int(fold_idx) == int(start_fold)
+                    and int(model_idx) == int(start_model)
                 )
-                if isinstance(result, float) and math.isnan(result):
-                    raise ValueError(
-                        f"NaN result from train_one_fold at fold={int(fold_idx)} model={int(model_idx)} (attempt=1)."
-                    )
+                attempt_start = 1
                 best_attempt = None
                 best_attempt_score = -1e9
+                if resume_this:
+                    attempt_start = max(1, int(resume_attempt))
+                    if resume_best_attempt is not None:
+                        best_attempt = resume_best_attempt
+                        best_attempt_score = float(resume_best_score)
+                    else:
+                        best_attempt_score = float(resume_best_score)
+                attempt_start = min(int(attempt_start), int(val_num_retry))
                 attempts = 0
-                while attempts < int(val_num_retry):
-                    if attempts > 0:
-                        result = train_one_fold(
-                            ds_tr_view=ds_tr_view,
-                            ds_va_view=ds_va_view,
-                            tr_idx=tr_idx,
-                            va_idx=va_idx,
+                for attempt_idx in range(int(attempt_start), int(val_num_retry) + 1):
+                    if int(val_num_retry) > 1:
+                        retry_state = dict(
                             fold_idx=int(fold_idx),
-                            comet_exp=comet_exp,
-                            curr_fold=int(fold_idx),
                             model_idx=int(model_idx),
-                            attempt_idx=int(attempts) + 1,
-                            attempt_max=int(val_num_retry),
-                            return_state=True,
-                            **inp_train_kwargs,
+                            attempt_idx=int(attempt_idx),
+                            best_attempt_score=float(best_attempt_score),
+                            best_attempt_state=best_attempt,
                         )
-                        if isinstance(result, float) and math.isnan(result):
-                            raise ValueError(
-                                f"NaN result from train_one_fold at fold={int(fold_idx)} "
-                                f"model={int(model_idx)} (attempt={int(attempts) + 1})."
-                            )
-                    attempts += 1
+                        _save_cv_state(False, int(fold_idx), int(model_idx))
+                    result = train_one_fold(
+                        ds_tr_view=ds_tr_view,
+                        ds_va_view=ds_va_view,
+                        tr_idx=tr_idx,
+                        va_idx=va_idx,
+                        fold_idx=int(fold_idx),
+                        comet_exp=comet_exp,
+                        curr_fold=int(fold_idx),
+                        model_idx=int(model_idx),
+                        attempt_idx=int(attempt_idx) if int(val_num_retry) > 1 else None,
+                        attempt_max=int(val_num_retry) if int(val_num_retry) > 1 else None,
+                        return_state=True,
+                        **inp_train_kwargs,
+                    )
+                    if isinstance(result, float) and math.isnan(result):
+                        raise ValueError(
+                            f"NaN result from train_one_fold at fold={int(fold_idx)} "
+                            f"model={int(model_idx)} (attempt={int(attempt_idx)})."
+                        )
+                    attempts = int(attempt_idx)
                     score = float(result["score"])
                     if math.isnan(score):
                         raise ValueError(
                             f"NaN validation score at fold={int(fold_idx)} model={int(model_idx)} "
-                            f"(attempt={int(attempts)})."
+                            f"(attempt={int(attempt_idx)})."
                         )
                     if best_attempt is None or score > best_attempt_score:
                         best_attempt = result
                         best_attempt_score = score
+                    if int(val_num_retry) > 1:
+                        next_attempt = int(attempt_idx) + 1 if int(attempt_idx) < int(val_num_retry) else int(attempt_idx)
+                        retry_state = dict(
+                            fold_idx=int(fold_idx),
+                            model_idx=int(model_idx),
+                            attempt_idx=int(next_attempt),
+                            best_attempt_score=float(best_attempt_score),
+                            best_attempt_state=best_attempt,
+                        )
+                        _save_cv_state(False, int(fold_idx), int(model_idx))
                     if score >= float(val_min_score):
-                        break
+                        if not val_retry_early_stop or int(attempt_idx) > 1:
+                            break
                 if best_attempt is None:
                     raise ValueError(
                         f"No attempts produced a valid score for fold={int(fold_idx)} model={int(model_idx)} "
@@ -1120,6 +1154,12 @@ def run_groupkfold_cv(
                 result["val_failed"] = bool(float(result["score"]) < float(val_min_score))
                 result["val_attempts"] = int(attempts)
                 result["val_min_score"] = float(val_min_score)
+                retry_state = None
+                _save_cv_state(False, int(fold_idx), int(model_idx))
+                if resume_this:
+                    resume_attempt = None
+                    resume_best_attempt = None
+                    resume_best_score = -1e9
 
                 score_val = float(result["score"])
                 if int(model_idx) < len(model_scores):

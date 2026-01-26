@@ -104,7 +104,9 @@ def train_cv(
             str(cfg.get("backbone_size", "b"))
         )
     if sweep_dino_weights is None:
-        raise ValueError("Set DINO_B_WEIGHTS_PATH or DINO_L_WEIGHTS_PATH for the chosen backbone_size.")
+        raise ValueError(
+            "Set DINO_B_WEIGHTS_PATH, DINO_L_WEIGHTS_PATH, or DINO_H_WEIGHTS_PATH for the chosen backbone_size."
+        )
 
     cache_key = (str(sweep_model_size), str(sweep_dino_weights), str(plus))
     if cache_key not in backbone_cache:
