@@ -855,7 +855,7 @@ def run_groupkfold_cv(
     if retrain_fold_model:
         retrain_pairs_in = retrain_fold_model
         if (
-            isinstance(retrain_fold_model, tuple)
+            isinstance(retrain_fold_model, (list, tuple))
             and len(retrain_fold_model) == 2
             and isinstance(retrain_fold_model[0], (list, tuple))
         ):
