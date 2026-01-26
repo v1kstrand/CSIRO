@@ -87,6 +87,7 @@ DEFAULTS: dict[str, Any] = dict(
     k_weights_val=False,
     val_min_score=0.0,
     val_num_retry=1,
+    retrain_fold_model=None,
     clip_val=1.0,
     n_models=1,
     val_freq=1,

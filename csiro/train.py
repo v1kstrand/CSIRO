@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import os
+import shutil
 from typing import Any, Callable
 
 import numpy as np
@@ -847,6 +848,22 @@ def run_groupkfold_cv(
     val_min_score = float(train_kwargs.get("val_min_score", DEFAULTS.get("val_min_score", 0.0)))
     val_num_retry = int(train_kwargs.get("val_num_retry", DEFAULTS.get("val_num_retry", 1)))
     val_num_retry = max(1, int(val_num_retry))
+    retrain_fold_model = train_kwargs.pop("retrain_fold_model", DEFAULTS.get("retrain_fold_model", None))
+    retrain_pairs: list[tuple[int, int]] = []
+    retrain_comet_key: str | None = None
+    retrain_active = False
+    if retrain_fold_model:
+        retrain_pairs_in = retrain_fold_model
+        if (
+            isinstance(retrain_fold_model, tuple)
+            and len(retrain_fold_model) == 2
+            and isinstance(retrain_fold_model[0], (list, tuple))
+        ):
+            retrain_pairs_in = retrain_fold_model[0]
+            retrain_comet_key = str(retrain_fold_model[1]) if retrain_fold_model[1] else None
+        retrain_pairs = [(int(f), int(m)) for f, m in retrain_pairs_in]
+        retrain_active = len(retrain_pairs) > 0
+    retrain_set = set(retrain_pairs)
 
     fold_scores: list[float] = []
     fold_model_scores: list[list[float]] = []
@@ -854,6 +871,31 @@ def run_groupkfold_cv(
     start_fold = 0
     start_model = 0
     state = None
+    dep_path = None
+
+    if retrain_active:
+        if save_output_path is None:
+            raise ValueError("retrain_fold_model requires save_output_dir (completed .pt).")
+        if not os.path.exists(save_output_path):
+            raise ValueError(f"Completed .pt not found for retrain: {save_output_path}")
+        state = torch.load(save_output_path, map_location="cpu", weights_only=False)
+        fold_scores[:] = [float(x) for x in state.get("fold_scores", [])]
+        fold_model_scores[:] = [list(map(float, xs)) for xs in state.get("fold_model_scores", [])]
+        fold_states[:] = list(state.get("states", []))
+        for f_idx, m_idx in retrain_pairs:
+            if f_idx < 0 or f_idx >= int(n_splits):
+                raise ValueError(f"retrain_fold_model fold out of range: {f_idx}")
+            if m_idx < 0 or m_idx >= int(n_models):
+                raise ValueError(f"retrain_fold_model model out of range: {m_idx}")
+            if f_idx >= len(fold_states) or m_idx >= len(fold_states[f_idx]):
+                raise ValueError(f"Missing fold/model state in completed .pt for retrain: {(f_idx, m_idx)}")
+        dep_path = os.path.join(os.path.dirname(save_output_path), f"{safe_name}_dep.pt")
+        if dep_path is not None and not os.path.exists(dep_path):
+            os.makedirs(os.path.dirname(dep_path), exist_ok=True)
+            shutil.copy2(save_output_path, dep_path)
+        cv_resume = False
+        start_fold = 0
+        start_model = 0
 
     if cv_resume:
         if cv_state_path is None:
@@ -889,7 +931,9 @@ def run_groupkfold_cv(
     if comet_exp_name is not None:
         import comet_ml  # type: ignore
         
-        if cv_resume and isinstance(state, dict):
+        if retrain_active and retrain_comet_key:
+            exp_key = retrain_comet_key
+        elif cv_resume and isinstance(state, dict):
             exp_key = state.get("exp_key")
 
         comet_exp = comet_ml.start(
@@ -911,6 +955,8 @@ def run_groupkfold_cv(
     def _save_cv_state(completed: bool, last_fold: int, last_model: int) -> None:
         if cv_state_path is None:
             return
+        if retrain_active and int(val_num_retry) <= 1:
+            return
         os.makedirs(os.path.dirname(cv_state_path), exist_ok=True)
         torch.save(
             dict(
@@ -925,6 +971,23 @@ def run_groupkfold_cv(
             ),
             cv_state_path,
         )
+
+    def _save_completed_pt() -> None:
+        if save_output_path is None:
+            return
+        os.makedirs(os.path.dirname(save_output_path), exist_ok=True)
+        scores = np.asarray(fold_scores, dtype=np.float32)
+        torch.save(
+            {
+                "fold_scores": scores,
+                "fold_model_scores": fold_model_scores,
+                "mean": float(scores.mean()) if scores.size else float("nan"),
+                "std": float(scores.std(ddof=0)) if scores.size else float("nan"),
+                "states": fold_states,
+            },
+            save_output_path,
+        )
+
     comet_ended = False
     try:
         exp_name = safe_name
@@ -939,6 +1002,8 @@ def run_groupkfold_cv(
                 break
             if int(fold_idx) < int(start_fold):
                 continue
+            if retrain_active and int(fold_idx) not in {f for f, _ in retrain_set}:
+                continue
             model_scores: list[float] = []
             model_states: list[dict[str, Any]] = []
             model_states_best: list[dict[str, Any]] = []
@@ -948,8 +1013,31 @@ def run_groupkfold_cv(
                 model_states = list(fold_states[int(fold_idx)])
             if int(fold_idx) < len(fold_model_scores):
                 model_scores = list(fold_model_scores[int(fold_idx)])
+            dl_va = None
+            criterion = None
+            if retrain_active:
+                va_subset = Subset(ds_va_view, va_idx)
+                num_workers = train_kwargs.get("num_workers", None)
+                num_workers = default_num_workers() if num_workers is None else int(num_workers)
+                tile_n = 2 if tiled_inp else 1
+                if val_bs_override is None:
+                    val_bs = max(1, int(train_kwargs["batch_size"]) // int(tile_n))
+                else:
+                    val_bs = max(1, int(val_bs_override))
+                dl_va = DataLoader(
+                    va_subset,
+                    shuffle=False,
+                    batch_size=int(val_bs),
+                    pin_memory=str(train_kwargs.get("device", "cuda")).startswith("cuda"),
+                    num_workers=num_workers,
+                    persistent_workers=(num_workers > 0),
+                )
+                criterion = WeightedMSELoss().to(train_kwargs["device"])
+
             for model_idx in range(int(n_models)):
                 if int(fold_idx) == int(start_fold) and int(model_idx) < int(start_model):
+                    continue
+                if retrain_active and (int(fold_idx), int(model_idx)) not in retrain_set:
                     continue
                 train_tfms = rect_train_tfms_list[int(model_idx)] if full_rect else train_tfms_list[int(model_idx)]
                 if tiled_inp:
@@ -1034,84 +1122,58 @@ def run_groupkfold_cv(
                 result["val_attempts"] = int(attempts)
                 result["val_min_score"] = float(val_min_score)
 
-                model_scores.append(float(result["score"]))
+                score_val = float(result["score"])
+                if int(model_idx) < len(model_scores):
+                    model_scores[int(model_idx)] = score_val
+                else:
+                    model_scores.append(score_val)
                 best_parts = result.get("best_state", result["state"])
-                model_states.append(
-                    dict(
-                        fold_idx=int(fold_idx),
-                        model_idx=int(model_idx),
-                        tiled_inp=bool(tiled_inp),
-                        model_name=str(model_name or ("tiled_base" if tiled_inp else "base")),
-                        out_format=str(out_format),
-                        pred_space=str(pred_space),
-                        head_style=str(head_style),
-                        neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
-                        rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
-                        neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
-                        neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
-                        neck_layer_scale=train_kwargs.get("neck_layer_scale", DEFAULTS.get("neck_layer_scale", None)),
-                        neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
-                        drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
-                        backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
-                        parts=result["state"],
-                        head_hidden=int(train_kwargs["head_hidden"]),
-                        head_depth=int(train_kwargs["head_depth"]),
-                        head_drop=float(train_kwargs["head_drop"]),
-                        num_neck=int(train_kwargs["num_neck"]),
-                        neck_num_heads=int(
-                            train_kwargs.get(
-                                "neck_num_heads",
-                                neck_num_heads_for(
-                                    str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
-                                ),
-                            )
-                        ),
-                        img_size=None if img_size is None else int(img_size),
-                        score=float(result["score"]),
-                        best_score=float(result["best_score"]),
-                        val_failed=bool(result.get("val_failed", False)),
-                        val_attempts=int(result.get("val_attempts", 1)),
-                        val_min_score=float(result.get("val_min_score", val_min_score)),
-                    )
+                state_entry = dict(
+                    fold_idx=int(fold_idx),
+                    model_idx=int(model_idx),
+                    tiled_inp=bool(tiled_inp),
+                    model_name=str(model_name or ("tiled_base" if tiled_inp else "base")),
+                    out_format=str(out_format),
+                    pred_space=str(pred_space),
+                    head_style=str(head_style),
+                    neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
+                    rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
+                    neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
+                    neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
+                    neck_layer_scale=train_kwargs.get("neck_layer_scale", DEFAULTS.get("neck_layer_scale", None)),
+                    neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
+                    drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
+                    backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
+                    parts=result["state"],
+                    head_hidden=int(train_kwargs["head_hidden"]),
+                    head_depth=int(train_kwargs["head_depth"]),
+                    head_drop=float(train_kwargs["head_drop"]),
+                    num_neck=int(train_kwargs["num_neck"]),
+                    neck_num_heads=int(
+                        train_kwargs.get(
+                            "neck_num_heads",
+                            neck_num_heads_for(
+                                str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
+                            ),
+                        )
+                    ),
+                    img_size=None if img_size is None else int(img_size),
+                    score=float(result["score"]),
+                    best_score=float(result["best_score"]),
+                    val_failed=bool(result.get("val_failed", False)),
+                    val_attempts=int(result.get("val_attempts", 1)),
+                    val_min_score=float(result.get("val_min_score", val_min_score)),
                 )
-                model_states_best.append(
-                    dict(
-                        fold_idx=int(fold_idx),
-                        model_idx=int(model_idx),
-                        tiled_inp=bool(tiled_inp),
-                        model_name=str(model_name or ("tiled_base" if tiled_inp else "base")),
-                        out_format=str(out_format),
-                        pred_space=str(pred_space),
-                        head_style=str(head_style),
-                        neck_rope=bool(train_kwargs.get("neck_rope", DEFAULTS.get("neck_rope", True))),
-                        rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
-                        neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
-                        neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
-                        neck_layer_scale=train_kwargs.get("neck_layer_scale", DEFAULTS.get("neck_layer_scale", None)),
-                        neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
-                        drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),
-                        backbone_size=str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b"))),
-                        parts=best_parts,
-                        head_hidden=int(train_kwargs["head_hidden"]),
-                        head_depth=int(train_kwargs["head_depth"]),
-                        head_drop=float(train_kwargs["head_drop"]),
-                        num_neck=int(train_kwargs["num_neck"]),
-                        neck_num_heads=int(
-                            train_kwargs.get(
-                                "neck_num_heads",
-                                neck_num_heads_for(
-                                    str(train_kwargs.get("backbone_size", DEFAULTS.get("backbone_size", "b")))
-                                ),
-                            )
-                        ),
-                        img_size=None if img_size is None else int(img_size),
-                        score=float(result["score"]),
-                        best_score=float(result["best_score"]),
-                        val_failed=bool(result.get("val_failed", False)),
-                        val_attempts=int(result.get("val_attempts", 1)),
-                        val_min_score=float(result.get("val_min_score", val_min_score)),
-                    )
-                )
+                best_state_entry = dict(state_entry)
+                best_state_entry["parts"] = best_parts
+                if int(model_idx) < len(model_states):
+                    model_states[int(model_idx)] = state_entry
+                else:
+                    model_states.append(state_entry)
+                if int(model_idx) < len(model_states_best):
+                    model_states_best[int(model_idx)] = best_state_entry
+                else:
+                    model_states_best.append(best_state_entry)
                 if int(fold_idx) < len(fold_states):
                     fold_states[int(fold_idx)] = model_states
                 else:
@@ -1122,6 +1184,52 @@ def run_groupkfold_cv(
                     fold_model_scores.append(model_scores)
                 _save_cv_state(False, int(fold_idx), int(model_idx))
 
+                if retrain_active and dl_va is not None and criterion is not None:
+                    if backbone_dtype is None:
+                        backbone_dtype = train_kwargs.get("backbone_dtype", DEFAULTS["backbone_dtype"])
+                    if isinstance(backbone_dtype, str):
+                        backbone_dtype = parse_dtype(backbone_dtype)
+                    top_k = int(train_kwargs.get("top_k_weights", DEFAULTS.get("top_k_weights", 0)))
+                    models_best = [
+                        _build_model_from_state(train_kwargs["backbone"], s, train_kwargs["device"], backbone_dtype)
+                        for s in model_states_best
+                    ]
+                    models_final = [
+                        _build_model_from_state(train_kwargs["backbone"], s, train_kwargs["device"], backbone_dtype)
+                        for s in model_states
+                    ]
+                    fold_score_best = eval_global_wr2_ensemble(
+                        models_best,
+                        dl_va,
+                        criterion.w,
+                        device=train_kwargs["device"],
+                        trainable_dtype=trainable_dtype,
+                        comet_exp=comet_exp,
+                        curr_fold=int(fold_idx),
+                        tiled_inp=bool(tiled_inp),
+                        log_key="1ENS_wR2",
+                    )
+                    if int(top_k) > 0:
+                        fold_score_kmean = eval_global_wr2_ensemble(
+                            models_final,
+                            dl_va,
+                            criterion.w,
+                            device=train_kwargs["device"],
+                            trainable_dtype=trainable_dtype,
+                            comet_exp=comet_exp,
+                            curr_fold=int(fold_idx),
+                            tiled_inp=bool(tiled_inp),
+                            log_key="1ENS_kmean_wR2",
+                        )
+                        score_val = float(fold_score_kmean)
+                    else:
+                        score_val = float(fold_score_best)
+                    if int(fold_idx) < len(fold_scores):
+                        fold_scores[int(fold_idx)] = score_val
+                    else:
+                        fold_scores.append(score_val)
+                    _save_completed_pt()
+
             if int(fold_idx) < len(fold_model_scores):
                 fold_model_scores[int(fold_idx)] = model_scores
             else:
@@ -1131,28 +1239,31 @@ def run_groupkfold_cv(
             else:
                 fold_states.append(model_states)
 
-            va_subset = Subset(ds_va_view, va_idx)
-            num_workers = train_kwargs.get("num_workers", None)
-            num_workers = default_num_workers() if num_workers is None else int(num_workers)
-            tile_n = 2 if tiled_inp else 1
-            if val_bs_override is None:
-                val_bs = max(1, int(train_kwargs["batch_size"]) // int(tile_n))
-            else:
-                val_bs = max(1, int(val_bs_override))
-            dl_va = DataLoader(
-                va_subset,
-                shuffle=False,
-                batch_size=int(val_bs),
-                pin_memory=str(train_kwargs.get("device", "cuda")).startswith("cuda"),
-                num_workers=num_workers,
-                persistent_workers=(num_workers > 0),
-            )
+            if dl_va is None:
+                va_subset = Subset(ds_va_view, va_idx)
+                num_workers = train_kwargs.get("num_workers", None)
+                num_workers = default_num_workers() if num_workers is None else int(num_workers)
+                tile_n = 2 if tiled_inp else 1
+                if val_bs_override is None:
+                    val_bs = max(1, int(train_kwargs["batch_size"]) // int(tile_n))
+                else:
+                    val_bs = max(1, int(val_bs_override))
+                dl_va = DataLoader(
+                    va_subset,
+                    shuffle=False,
+                    batch_size=int(val_bs),
+                    pin_memory=str(train_kwargs.get("device", "cuda")).startswith("cuda"),
+                    num_workers=num_workers,
+                    persistent_workers=(num_workers > 0),
+                )
 
             if backbone_dtype is None:
                 backbone_dtype = train_kwargs.get("backbone_dtype", DEFAULTS["backbone_dtype"])
             if isinstance(backbone_dtype, str):
                 backbone_dtype = parse_dtype(backbone_dtype)
             top_k = int(train_kwargs.get("top_k_weights", DEFAULTS.get("top_k_weights", 0)))
+            if criterion is None:
+                criterion = WeightedMSELoss().to(train_kwargs["device"])
             models_best = [
                 _build_model_from_state(train_kwargs["backbone"], s, train_kwargs["device"], backbone_dtype)
                 for s in model_states_best
@@ -1189,6 +1300,8 @@ def run_groupkfold_cv(
             else:
                 fold_scores.append(float(fold_score_best))
             _save_cv_state(False, int(fold_idx), int(n_models) - 1)
+            if retrain_active:
+                _save_completed_pt()
 
         total_folds = int(max_folds) if max_folds is not None else int(n_splits)
         if fold_scores:
@@ -1212,17 +1325,7 @@ def run_groupkfold_cv(
 
     scores = np.asarray(fold_scores, dtype=np.float32)
     if save_output_path is not None:
-        os.makedirs(os.path.dirname(save_output_path), exist_ok=True)
-        torch.save(
-            {
-                "fold_scores": scores,
-                "fold_model_scores": fold_model_scores,
-                "mean": float(scores.mean()),
-                "std": float(scores.std(ddof=0)),
-                "states": fold_states,
-            },
-            save_output_path,
-        )
+        _save_completed_pt()
         if cv_state_path is not None and os.path.exists(cv_state_path):
             try:
                 os.remove(cv_state_path)
