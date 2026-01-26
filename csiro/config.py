@@ -115,7 +115,7 @@ def default_num_workers(reserve: int = 3) -> int:
 
 
 def dino_hub_name(*, model_size: str, plus: str) -> str:
-    plus = "plus" if "+" in model_size else ""
+    plus = "plus" if "h" in model_size else ""
     return f"dinov3_vit{model_size}16{plus}"
 
 
