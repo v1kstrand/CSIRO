@@ -1124,14 +1124,15 @@ def run_groupkfold_cv(
                         )
                     attempts = int(attempt_idx)
                     score = float(result["score"])
-                    if math.isnan(score):
+                    attempt_best = float(result.get("best_score", score))
+                    if math.isnan(score) or math.isnan(attempt_best):
                         raise ValueError(
                             f"NaN validation score at fold={int(fold_idx)} model={int(model_idx)} "
                             f"(attempt={int(attempt_idx)})."
                         )
-                    if best_attempt is None or score > best_attempt_score:
+                    if best_attempt is None or attempt_best > best_attempt_score:
                         best_attempt = result
-                        best_attempt_score = score
+                        best_attempt_score = attempt_best
                     if int(val_num_retry) > 1:
                         next_attempt = int(attempt_idx) + 1 if int(attempt_idx) < int(val_num_retry) else int(attempt_idx)
                         retry_state = dict(
@@ -1142,7 +1143,7 @@ def run_groupkfold_cv(
                             best_attempt_state=best_attempt,
                         )
                         _save_cv_state(False, int(fold_idx), int(model_idx))
-                    if score >= float(val_min_score):
+                    if attempt_best >= float(val_min_score):
                         if not val_retry_early_stop or int(attempt_idx) > 1:
                             break
                 if best_attempt is None:
@@ -1151,7 +1152,7 @@ def run_groupkfold_cv(
                         f"(val_num_retry={int(val_num_retry)})."
                     )
                 result = best_attempt
-                result["val_failed"] = bool(float(result["score"]) < float(val_min_score))
+                result["val_failed"] = bool(float(result.get("best_score", result["score"])) < float(val_min_score))
                 result["val_attempts"] = int(attempts)
                 result["val_min_score"] = float(val_min_score)
                 retry_state = None
