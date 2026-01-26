@@ -878,9 +878,10 @@ def run_groupkfold_cv(
     if retrain_active:
         if save_output_path is None:
             raise ValueError("retrain_fold_model requires save_output_dir (completed .pt).")
-        if not os.path.exists(save_output_path):
-            raise ValueError(f"Completed .pt not found for retrain: {save_output_path}")
-        state = torch.load(save_output_path, map_location="cpu", weights_only=False)
+        dep_path = os.path.join(os.path.dirname(save_output_path), f"{safe_name}_dep.pt")
+        if dep_path is None or not os.path.exists(dep_path):
+            raise ValueError(f"Retrain requires _dep.pt source (not found): {dep_path}")
+        state = torch.load(dep_path, map_location="cpu", weights_only=False)
         fold_scores[:] = [float(x) for x in state.get("fold_scores", [])]
         fold_model_scores[:] = [list(map(float, xs)) for xs in state.get("fold_model_scores", [])]
         fold_states[:] = list(state.get("states", []))
@@ -891,10 +892,6 @@ def run_groupkfold_cv(
                 raise ValueError(f"retrain_fold_model model out of range: {m_idx}")
             if f_idx >= len(fold_states) or m_idx >= len(fold_states[f_idx]):
                 raise ValueError(f"Missing fold/model state in completed .pt for retrain: {(f_idx, m_idx)}")
-        dep_path = os.path.join(os.path.dirname(save_output_path), f"{safe_name}_dep.pt")
-        if dep_path is not None and not os.path.exists(dep_path):
-            os.makedirs(os.path.dirname(dep_path), exist_ok=True)
-            shutil.copy2(save_output_path, dep_path)
         cv_resume = False
         start_fold = 0
         start_model = 0
