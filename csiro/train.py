@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import math
 import os
-import shutil
 from typing import Any, Callable
 
 import numpy as np
@@ -192,6 +191,7 @@ def _build_model_from_state(
             model_kwargs["neck_ffn"] = bool(state.get("neck_ffn", DEFAULTS.get("neck_ffn", True)))
             if model_cls is TiledDINOv3RegressorStitched3:
                 model_kwargs["neck_pool"] = bool(state.get("neck_pool", DEFAULTS.get("neck_pool", False)))
+                model_kwargs["bb_cat"] = bool(state.get("bb_cat", DEFAULTS.get("bb_cat", False)))
                 model_kwargs["neck_layer_scale"] = state.get(
                     "neck_layer_scale",
                     DEFAULTS.get("neck_layer_scale", None),
@@ -254,6 +254,7 @@ def train_one_fold(
     neck_drop: float | None = None,
     drop_path: dict[str, float] | None = None,
     neck_ffn: bool | None = None,
+    bb_cat: bool | None = None,
     top_k_weights: int | None = None,
     last_k_weights: int | None = None,
     k_weights_val: bool | None = None,
@@ -347,6 +348,9 @@ def train_one_fold(
             if neck_pool is None:
                 neck_pool = bool(DEFAULTS.get("neck_pool", False))
             model_kwargs["neck_pool"] = bool(neck_pool)
+            if bb_cat is None:
+                bb_cat = bool(DEFAULTS.get("bb_cat", False))
+            model_kwargs["bb_cat"] = bool(bb_cat)
             if neck_layer_scale is None:
                 neck_layer_scale = DEFAULTS.get("neck_layer_scale", None)
             model_kwargs["neck_layer_scale"] = neck_layer_scale
@@ -1182,6 +1186,7 @@ def run_groupkfold_cv(
                     rope_rescale=train_kwargs.get("rope_rescale", DEFAULTS.get("rope_rescale", None)),
                     neck_drop=float(train_kwargs.get("neck_drop", DEFAULTS.get("neck_drop", 0.0))),
                     neck_pool=bool(train_kwargs.get("neck_pool", DEFAULTS.get("neck_pool", False))),
+                    bb_cat=bool(train_kwargs.get("bb_cat", DEFAULTS.get("bb_cat", False))),
                     neck_layer_scale=train_kwargs.get("neck_layer_scale", DEFAULTS.get("neck_layer_scale", None)),
                     neck_ffn=bool(train_kwargs.get("neck_ffn", DEFAULTS.get("neck_ffn", True))),
                     drop_path=copy.deepcopy(train_kwargs.get("drop_path", DEFAULTS.get("drop_path", None))),

@@ -297,6 +297,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         neck_ffn: bool = True,
         neck_pool: bool = False,
         neck_layer_scale = None,
+        bb_cat: bool = False,
     ):
         super().__init__()
         head_style = str(head_style).strip().lower()
@@ -309,6 +310,7 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         self.out_format = str(out_format).strip().lower()
         self.neck_rope = bool(neck_rope)
         self.neck_pool = bool(neck_pool)
+        self.bb_cat = bool(bb_cat)
         self.num_regs = backbone.n_storage_tokens + 1 
         neck_drop = float(neck_drop)
         assert rope_rescale is None or 1 <= rope_rescale <= 2
@@ -450,8 +452,13 @@ class TiledDINOv3RegressorStitched3(nn.Module):
         x_right = x[:, 1]
         with torch.set_grad_enabled(self.backbone_grad):
             with autocast_context(x.device, dtype=self.backbone_dtype):
-                tok1, _ = _backbone_tokens(self.backbone, x_left)
-                tok2, _ = _backbone_tokens(self.backbone, x_right)
+                if self.bb_cat:
+                    x_cat = torch.cat([x_left, x_right], dim=0)
+                    tok_cat, _ = _backbone_tokens(self.backbone, x_cat)
+                    tok1, tok2 = tok_cat[: x_left.size(0)], tok_cat[x_left.size(0) :]
+                else:
+                    tok1, _ = _backbone_tokens(self.backbone, x_left)
+                    tok2, _ = _backbone_tokens(self.backbone, x_right)
 
         if tok1.size(1) <= int(self.num_regs):
             raise ValueError(f"Unexpected token length {tok1.size(1)} for num_regs={self.num_regs}.")
