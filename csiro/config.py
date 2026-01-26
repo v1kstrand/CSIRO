@@ -27,6 +27,7 @@ DEFAULT_DATA_ROOT: str = os.getenv("DEFAULT_DATA_ROOT")
 DEFAULT_DINO_ROOT: str = str(_REPO_ROOT / "_dinov3")
 DINO_B_WEIGHTS_PATH: str | None = os.getenv("DINO_B_WEIGHTS_PATH")
 DINO_L_WEIGHTS_PATH: str | None = os.getenv("DINO_L_WEIGHTS_PATH")
+DINO_H_WEIGHTS_PATH: str | None = os.getenv("DINO_H_WEIGHTS_PATH")
 
 
 
@@ -36,6 +37,8 @@ def dino_weights_path_from_size(backbone_size: str) -> str | None:
         return DINO_B_WEIGHTS_PATH
     if s == "l":
         return DINO_L_WEIGHTS_PATH
+    if s == "h":
+        return DINO_H_WEIGHTS_PATH
     raise ValueError(f"Unknown backbone_size: {backbone_size}")
 
 
@@ -45,6 +48,8 @@ def neck_num_heads_for(backbone_size: str) -> int:
         return 12
     if s == "l":
         return 16
+    if s == "h":
+        return 20
     raise ValueError(f"Unknown backbone_size: {backbone_size}")
     
 DEFAULTS: dict[str, Any] = dict(

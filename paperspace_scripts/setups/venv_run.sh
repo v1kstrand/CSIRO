@@ -19,6 +19,7 @@ export BASE_ARGS_PATH="/notebooks/setups/configs/base.yaml"
 export DEFAULT_DATA_ROOT="/notebooks/kaggle/csiro"
 export DINO_B_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
 export DINO_L_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+export DINO_H_WEIGHTS_PATH="/notebooks/kaggle/csiro/weights/dinov3/dinov3_vith16plus_pretrain_lvd1689m-7c1da9a5.pth"
 
 
 # 4) Jupyter kernel + handy libs
