@@ -636,6 +636,24 @@ def predict_ensemble_tiled(
         models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
         preds = _predict_with_models(models)
         return _postprocess_mass_balance(preds)
+    if outer_agg == "trimmed_flatten":
+        flat_states = [s for run in runs for s in run]
+        if trim_k <= 0:
+            models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
+            preds = _predict_with_models(models)
+            return _postprocess_mass_balance(preds)
+        n_models = len(flat_states)
+        if 2 * trim_k >= n_models:
+            raise ValueError(f"trim_k={trim_k} is too large for n_models={n_models}.")
+        preds_models: list[torch.Tensor] = []
+        for s in flat_states:
+            model = _build_model_from_state(backbone, s, device, backbone_dtype)
+            preds_models.append(_predict_with_models([model]))
+        stack = torch.stack(preds_models, dim=0)
+        sorted_vals, _ = torch.sort(stack, dim=0)
+        trimmed = sorted_vals[trim_k : n_models - trim_k]
+        preds = trimmed.mean(dim=0)
+        return _postprocess_mass_balance(preds)
     if outer_agg in ("mean", "median", "trimmed"):
         preds_runs: list[torch.Tensor] = []
         for run in runs:
