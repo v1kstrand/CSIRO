@@ -468,8 +468,13 @@ class TiledSharedTTADataset(Dataset):
             raise ValueError("TiledSharedTTADataset expects PIL images from base dataset.")
 
         outs: list[torch.Tensor] = []
-        for idx in range(int(self.tta_n)):
-            k = self._ops[idx % 4]
+        if int(self.tta_n) == 2:
+            ops = (0, 3)
+        elif int(self.tta_n) == 3:
+            ops = [0, 3, random.choice((1, 2))]
+        else:
+            ops = [self._ops[idx % 4] for idx in range(int(self.tta_n))]
+        for k in ops:
             full = self._apply_op(img, k)
             left = full.crop((0, 0, 1000, 1000))
             right = full.crop((1000, 0, 2000, 1000))
