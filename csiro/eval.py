@@ -549,6 +549,7 @@ def predict_ensemble_tiled(
     inner_agg: str = "mean",
     outer_agg: str = "mean",
     k_weights: int = 0,
+    trim_k: int = 0,
 ) -> torch.Tensor:
     runs = _normalize_runs(states)
     if int(k_weights) > 0:
@@ -583,6 +584,9 @@ def predict_ensemble_tiled(
     backbone.eval()
 
     outer_agg = str(outer_agg).lower()
+    trim_k = int(trim_k)
+    if trim_k < 0:
+        raise ValueError(f"trim_k must be >= 0 (got {trim_k}).")
 
     def _predict_with_models(models: list[torch.nn.Module]) -> torch.Tensor:
         for model in models:
@@ -632,11 +636,23 @@ def predict_ensemble_tiled(
         models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
         preds = _predict_with_models(models)
         return _postprocess_mass_balance(preds)
-    if outer_agg in ("mean", "median"):
+    if outer_agg in ("mean", "median", "trimmed"):
         preds_runs: list[torch.Tensor] = []
         for run in runs:
             models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in run]
             preds_runs.append(_predict_with_models(models))
-        preds = _agg_stack(preds_runs, outer_agg)
+        if outer_agg == "trimmed":
+            if trim_k <= 0:
+                preds = _agg_stack(preds_runs, "mean")
+            else:
+                n_runs = len(preds_runs)
+                if 2 * trim_k >= n_runs:
+                    raise ValueError(f"trim_k={trim_k} is too large for n_runs={n_runs}.")
+                stack = torch.stack(preds_runs, dim=0)
+                sorted_vals, _ = torch.sort(stack, dim=0)
+                trimmed = sorted_vals[trim_k : n_runs - trim_k]
+                preds = trimmed.mean(dim=0)
+        else:
+            preds = _agg_stack(preds_runs, outer_agg)
         return _postprocess_mass_balance(preds)
     raise ValueError(f"Unknown outer_agg: {outer_agg}")
