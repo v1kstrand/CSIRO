@@ -550,6 +550,7 @@ def predict_ensemble_tiled(
     outer_agg: str = "mean",
     k_weights: int = 0,
     trim_k: int = 0,
+    run_weights: list[float] | None = None,
 ) -> torch.Tensor:
     runs = _normalize_runs(states)
     if int(k_weights) > 0:
@@ -638,6 +639,22 @@ def predict_ensemble_tiled(
         return _postprocess_mass_balance(preds)
     if outer_agg == "trimmed_flatten":
         flat_states = [s for run in runs for s in run]
+        if run_weights is not None:
+            if len(run_weights) != len(runs):
+                raise ValueError(f"run_weights must match n_runs={len(runs)} (got {len(run_weights)}).")
+            weights_np = np.asarray(run_weights, dtype=np.float32)
+            if np.any(weights_np < 0):
+                raise ValueError("run_weights must be non-negative.")
+            w_sum = float(weights_np.sum())
+            if w_sum <= 0:
+                raise ValueError("run_weights must sum to > 0.")
+            weights_np = weights_np / w_sum
+            expanded_weights = []
+            for w, run in zip(weights_np.tolist(), runs):
+                expanded_weights.extend([float(w)] * len(run))
+            w_flat = torch.tensor(expanded_weights, dtype=torch.float32)
+        else:
+            w_flat = None
         if trim_k <= 0:
             models = [_build_model_from_state(backbone, s, device, backbone_dtype) for s in flat_states]
             preds = _predict_with_models(models)
@@ -650,9 +667,15 @@ def predict_ensemble_tiled(
             model = _build_model_from_state(backbone, s, device, backbone_dtype)
             preds_models.append(_predict_with_models([model]))
         stack = torch.stack(preds_models, dim=0)
-        sorted_vals, _ = torch.sort(stack, dim=0)
+        sorted_vals, sorted_idx = torch.sort(stack, dim=0)
         trimmed = sorted_vals[trim_k : n_models - trim_k]
-        preds = trimmed.mean(dim=0)
+        if w_flat is None:
+            preds = trimmed.mean(dim=0)
+        else:
+            w_ordered = w_flat.to(sorted_vals.device)[sorted_idx]
+            w_trimmed = w_ordered[trim_k : n_models - trim_k]
+            w_sum = w_trimmed.sum(dim=0).clamp_min(1e-8)
+            preds = (trimmed * w_trimmed).sum(dim=0) / w_sum
         return _postprocess_mass_balance(preds)
     if outer_agg in ("mean", "median", "trimmed"):
         preds_runs: list[torch.Tensor] = []
