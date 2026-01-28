@@ -642,15 +642,15 @@ def predict_ensemble_tiled(
         if run_weights is not None:
             if len(run_weights) != len(runs):
                 raise ValueError(f"run_weights must match n_runs={len(runs)} (got {len(run_weights)}).")
-            weights_np = np.asarray(run_weights, dtype=np.float32)
-            if np.any(weights_np < 0):
+            weights_t = torch.as_tensor(run_weights, dtype=torch.float32)
+            if torch.any(weights_t < 0):
                 raise ValueError("run_weights must be non-negative.")
-            w_sum = float(weights_np.sum())
+            w_sum = float(weights_t.sum().item())
             if w_sum <= 0:
                 raise ValueError("run_weights must sum to > 0.")
-            weights_np = weights_np / w_sum
+            weights_t = weights_t / w_sum
             expanded_weights = []
-            for w, run in zip(weights_np.tolist(), runs):
+            for w, run in zip(weights_t.tolist(), runs):
                 expanded_weights.extend([float(w)] * len(run))
             w_flat = torch.tensor(expanded_weights, dtype=torch.float32)
         else:
